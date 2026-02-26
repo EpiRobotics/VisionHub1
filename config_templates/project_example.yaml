@@ -1,0 +1,64 @@
+# VisionHub Project Configuration Example (PatchCore Surface Inspection)
+# Copy to DATA_ROOT/projects/<project_id>/project.yaml
+
+project_id: side_a
+display_name: "Side A - Scratch & Foreign Object"
+enabled: true
+
+io:
+  tcp_port: 9101
+  bind_host: "0.0.0.0"
+  allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
+  output_dir: "${DATA_ROOT}/projects/side_a/runs"
+
+image:
+  file_ready:
+    mode: "size_stable"         # size_stable / open_retry
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"                  # rgb / gray
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 2050
+    h: 350
+
+pipeline:
+  algo: "patchcore_tiling_v1"
+  model:
+    active: "${PROJECT_DIR}/active_model.json"
+  preprocess:
+    normalize: "imagenet"
+    align:
+      enabled: false
+  infer:
+    device: "cuda"
+    tile:
+      tile_w: 512
+      tile_h: 352
+      stride_w: 384
+      stride_h: 352
+    batch_tiles: 8
+  postprocess:
+    decision:
+      score_method: "q999"
+      threshold: "from_model"
+    export:
+      save_heatmap_png: true
+      heatmap_vmin: 0.0
+      heatmap_vmax_mode: "thr_scale"
+      heatmap_vmax: 1.0
+      heatmap_vmax_scale: 1.2
+      save_u16: true
+      save_mask: true
+      mask_thr_scale: 0.85
+      dilate_px: 10
+      close_px: 6
+      regions:
+        enabled: true
+        min_area_px: 80
+        max_regions: 10
+        output_format: "json"

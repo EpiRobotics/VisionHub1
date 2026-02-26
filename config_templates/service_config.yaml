@@ -1,0 +1,24 @@
+# VisionHub Service Configuration
+# Copy this file to DATA_ROOT/service/service_config.yaml
+
+data_root: "E:\\AIInspect"
+
+gpu:
+  device: "cuda"
+  workers: 1                    # Number of GPU workers (1 for stability)
+  max_loaded_models: 5          # LRU cache size for loaded models
+
+scheduler:
+  max_queue_per_project: 20     # Max pending jobs per project queue
+  job_timeout_ms: 10000         # Single job total timeout
+  poll_interval_ms: 10          # Scheduler poll interval
+
+http:
+  host: "0.0.0.0"
+  port: 8100
+
+logging:
+  level: "INFO"
+  dir: "${DATA_ROOT}/service/logs"
+  rotate: "daily"
+  max_days: 30
