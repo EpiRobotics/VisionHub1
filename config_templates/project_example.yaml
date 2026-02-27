@@ -39,17 +39,17 @@ pipeline:
     tile:
       tile_w: 512
       tile_h: 352
-      stride_w: 384
+      stride_w: 384           # overlap = tile_w - stride_w = 128px
       stride_h: 352
     batch_tiles: 8
   postprocess:
     decision:
-      score_method: "q999"
-      threshold: "from_model"
+      score_method: "q999"      # heatmap quantile for image-level score
+      threshold: "from_model"   # from_model / fixed
     export:
       save_heatmap_png: true
       heatmap_vmin: 0.0
-      heatmap_vmax_mode: "thr_scale"
+      heatmap_vmax_mode: "thr_scale"   # thr_scale / fixed / auto
       heatmap_vmax: 1.0
       heatmap_vmax_scale: 1.2
       save_u16: true
@@ -62,3 +62,22 @@ pipeline:
         min_area_px: 80
         max_regions: 10
         output_format: "json"
+
+  # PatchCore-specific training parameters
+  # These are used by the train endpoint and can be overridden per-project.
+  _train:
+    backbone: "resnet18"          # resnet18 / resnet50
+    layers: "layer2,layer3"       # feature layers to extract
+    pretrained: true              # use ImageNet pretrained weights
+    proj_dim: 128                 # random projection dim (0 = disabled)
+    max_patches_per_tile: 256     # patches sampled per tile for memory bank
+    memory_size: 20000            # final memory bank size
+    batch_size: 16                # training batch size
+    num_workers: 2                # data loader workers
+    pad_mode: "edge"              # edge / reflect / constant
+    use_faiss: true               # use faiss for kNN (faster)
+    compute_threshold: true       # auto-compute threshold from OK set
+    ok_quantile: 0.999            # quantile of OK scores
+    thr_scale: 1.10               # scale factor on quantile
+    pixel_mm: 0.05                # mm per pixel (for defect size calc)
+    defect_mm_min: 2.0            # minimum defect size in mm
