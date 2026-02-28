@@ -1,0 +1,102 @@
+# VisionHub Project Configuration - Weld/Spark Binary Classification (ResNet18)
+# Copy to DATA_ROOT/projects/<project_id>/project.yaml
+#
+# This project type classifies image regions as OK/NG using supervised ResNet18.
+# Uses the same JSON-based region cropping as glyph PatchCore (unified interface).
+#
+# Inference requires BOTH an image AND a JSON annotation file:
+#   TCP: {"cmd":"INFER","job_id":"001","image_path":"...","options":{"json_path":"..."}}
+#
+# JSON annotation format (same as label projects):
+#   {
+#     "image_name": "img001.jpg",
+#     "items": [
+#       {"ch": "weld_1", "cx": 300, "cy": 200, "w": 100, "h": 100},
+#       {"ch": "weld_2", "cx": 500, "cy": 200, "w": 100, "h": 100}
+#     ]
+#   }
+#
+# Training dataset structure (two modes supported):
+#   Mode 1 - ImageFolder (pre-cropped):
+#     datasets/
+#       train/
+#         OK/*.jpg        # OK sample images
+#         NG/*.jpg        # NG sample images
+#       val/              # Optional validation set
+#         OK/*.jpg
+#         NG/*.jpg
+#
+#   Mode 2 - JSON crop (from big images):
+#     datasets/
+#       ok/               # Source big images
+#       json/             # JSON annotations (items must have "label": "OK"/"NG")
+
+project_id: weld_check
+display_name: "Weld Check - Spark Defect Classification"
+enabled: true
+
+io:
+  tcp_port: 9301              # Independent port for this project
+  bind_host: "0.0.0.0"
+  allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
+  output_dir: "${DATA_ROOT}/projects/weld_check/runs"
+
+image:
+  file_ready:
+    mode: "size_stable"       # size_stable / open_retry
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"                # Classification uses RGB
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "resnet_classify_v1"
+  model:
+    active: "${PROJECT_DIR}/active_model.json"
+  preprocess:
+    normalize: "imagenet"     # ImageNet default normalization
+    align:
+      enabled: false
+  infer:
+    device: "cuda"            # cuda / cpu / auto
+    batch_size: 16            # Batch size for region classification
+  postprocess:
+    decision:
+      score_method: "per_region"    # Each region scored independently
+      ng_threshold: null            # NG probability threshold (null = argmax mode)
+      # Set to e.g. 0.5 to use probability threshold instead of argmax
+    export:
+      save_overlay: true            # Save overlay with per-region OK/NG annotations
+      save_txt: true                # Save per-image result text file
+
+  # ResNet18 classification training parameters
+  _train:
+    # --- Image preprocessing ---
+    img_size: 224                   # Resize each crop to this size (square)
+    pad: 2                          # Padding pixels around each region bounding box
+
+    # --- Training hyperparameters ---
+    batch_size: 8                   # Training batch size
+    num_epochs: 40                  # Number of training epochs
+    learning_rate: 0.0001           # Adam optimizer learning rate
+
+    # --- Data augmentation ---
+    brightness: 0.3                 # ColorJitter brightness range
+    contrast: 0.3                   # ColorJitter contrast range
+    rotation: 5                     # Random rotation degrees
+    horizontal_flip: true           # Enable random horizontal flip
+
+    # --- Classification threshold ---
+    ng_threshold: 0.5               # NG probability threshold for inference
+    # Set to 0.5 for balanced threshold, increase for fewer false positives
+
+    # --- JSON crop mode (optional) ---
+    label_key: "label"              # JSON item key for OK/NG label
+    # Only used when training from JSON annotations (Mode 2)

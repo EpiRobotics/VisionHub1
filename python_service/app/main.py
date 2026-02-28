@@ -23,6 +23,7 @@ import uvicorn
 # Ensure plugins are registered at import time
 import app.plugins.glyph_patchcore_plugin  # noqa: F401
 import app.plugins.patchcore_plugin  # noqa: F401
+import app.plugins.resnet_classify_plugin  # noqa: F401
 from app.config import ServiceConfig, load_service_config
 from app.http_api import create_api
 from app.project_manager import ProjectManager
