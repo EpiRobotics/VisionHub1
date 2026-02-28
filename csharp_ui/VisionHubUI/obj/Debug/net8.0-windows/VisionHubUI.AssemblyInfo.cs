@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("VisionHubUI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d54a274b781222c93c84344035cf69f11b9a598e")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+252e1069dfc019edbd1be5d3382805e936fd8422")]
 [assembly: System.Reflection.AssemblyProductAttribute("VisionHubUI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("VisionHubUI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

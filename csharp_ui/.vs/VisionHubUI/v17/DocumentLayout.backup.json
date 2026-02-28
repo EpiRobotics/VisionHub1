@@ -1,7 +1,12 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "D:\\project\\VisionHub\\VisionHub\\csharp_ui\\",
-  "Documents": [],
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}|VisionHubUI\\VisionHubUI.csproj|d:\\project\\visionhub\\visionhub\\csharp_ui\\visionhubui\\mainform.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}|VisionHubUI\\VisionHubUI.csproj|solutionrelative:visionhubui\\mainform.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
@@ -9,11 +14,24 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": -1,
+          "SelectedChildIndex": 1,
           "Children": [
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "MainForm.cs",
+              "DocumentMoniker": "D:\\project\\VisionHub\\VisionHub\\csharp_ui\\VisionHubUI\\MainForm.cs",
+              "RelativeDocumentMoniker": "VisionHubUI\\MainForm.cs",
+              "ToolTip": "D:\\project\\VisionHub\\VisionHub\\csharp_ui\\VisionHubUI\\MainForm.cs",
+              "RelativeToolTip": "VisionHubUI\\MainForm.cs",
+              "ViewState": "AgIAAB0AAAAAAAAAAAAAwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-27T02:46:11.684Z",
+              "EditorCaption": ""
             }
           ]
         }
