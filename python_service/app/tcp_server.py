@@ -92,30 +92,60 @@ class TcpProjectServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Handle a single client connection (supports multiple requests)."""
+        """Handle a single client connection (supports multiple requests).
+
+        Supports both:
+        - Proper JSON Lines (newline-terminated) from production clients
+        - Raw JSON without newline from TCP test tools
+
+        Uses read() with buffering instead of readline() so data without
+        a trailing newline is still processed after a short wait.
+        """
         peer = writer.get_extra_info("peername")
         self._log("INFO", f"Client connected: {peer}")
 
+        recv_buf = b""
         try:
             while self._running:
                 try:
-                    line = await asyncio.wait_for(reader.readline(), timeout=300)
+                    chunk = await asyncio.wait_for(reader.read(8192), timeout=300)
                 except asyncio.TimeoutError:
+                    # 5-min idle timeout
+                    self._log("INFO", f"Client idle timeout: {peer}")
                     break
 
-                if not line:
-                    break  # Client disconnected
+                if not chunk:
+                    break  # Client disconnected (EOF)
 
-                line_str = line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
+                recv_buf += chunk
 
-                self._log("DEBUG", f"RECV: {line_str[:500]}")
-                response = await self._process_request(line_str)
-                self._log("DEBUG", f"SEND: {response[:500]}")
-                response_bytes = (response + "\n").encode("utf-8")
-                writer.write(response_bytes)
-                await writer.drain()
+                # Process all complete messages in the buffer.
+                # A message is either newline-delimited OR a complete JSON object.
+                while recv_buf:
+                    # Fast path: check for newline-delimited messages
+                    nl_pos = recv_buf.find(b"\n")
+                    if nl_pos >= 0:
+                        line_bytes = recv_buf[:nl_pos]
+                        recv_buf = recv_buf[nl_pos + 1:]
+                        line_str = line_bytes.decode("utf-8", errors="replace").strip()
+                        if line_str:
+                            await self._process_and_respond(line_str, writer, peer)
+                        continue
+
+                    # No newline found - try to parse buffer as complete JSON
+                    line_str = recv_buf.decode("utf-8", errors="replace").strip()
+                    if not line_str:
+                        recv_buf = b""
+                        break
+                    try:
+                        json.loads(line_str)
+                        # Valid JSON without newline - process it
+                        recv_buf = b""
+                        await self._process_and_respond(line_str, writer, peer)
+                    except json.JSONDecodeError:
+                        # Incomplete data - wait for more
+                        break
+
         except ConnectionResetError:
             self._log("INFO", f"Client disconnected: {peer}")
         except Exception as exc:
@@ -126,6 +156,20 @@ class TcpProjectServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def _process_and_respond(
+        self,
+        line_str: str,
+        writer: asyncio.StreamWriter,
+        peer: object,
+    ) -> None:
+        """Process a single request line and write the response."""
+        self._log("INFO", f"RECV from {peer}: {line_str[:500]}")
+        response = await self._process_request(line_str)
+        self._log("INFO", f"SEND to {peer}: {response[:200]}")
+        response_bytes = (response + "\n").encode("utf-8")
+        writer.write(response_bytes)
+        await writer.drain()
 
     async def _process_request(self, line: str) -> str:
         """Parse a JSON line request and dispatch to handler."""
