@@ -189,8 +189,9 @@ public partial class MainForm : Form
         });
         Controls.Add(_statusStrip);
 
-        // Ensure correct z-order (left panel on top of tab control)
-        _leftPanel.BringToFront();
+        // Ensure correct z-order: Fill control must be highest z-order
+        // so it fills remaining space AFTER Left-docked panel is placed.
+        _tabControl.BringToFront();
     }
 
     private void SetupTimers()
