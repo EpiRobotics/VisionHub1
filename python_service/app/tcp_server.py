@@ -71,12 +71,7 @@ class TcpProjectServer:
             self.port,
         )
         self._running = True
-        logger.info(
-            "TCP server started for project '%s' on %s:%d",
-            self.project_id,
-            self.host,
-            self.port,
-        )
+        self._log("INFO", f"TCP server started on {self.host}:{self.port}")
 
     async def stop(self) -> None:
         """Stop the TCP server."""
@@ -85,7 +80,7 @@ class TcpProjectServer:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        logger.info("TCP server stopped for project '%s'", self.project_id)
+        self._log("INFO", "TCP server stopped")
 
     async def _handle_client(
         self,
@@ -171,14 +166,42 @@ class TcpProjectServer:
         writer.write(response_bytes)
         await writer.drain()
 
+    @staticmethod
+    def _try_fix_json(line: str) -> str:
+        """Try to fix common JSON formatting issues from TCP test tools.
+
+        Handles:
+        - Missing outer braces: '"cmd":"INFER",...' -> '{"cmd":"INFER",...}'
+        - Data sent without 'cmd' key but starting with command name: 'INFER,...'
+        """
+        stripped = line.strip()
+        if not stripped:
+            return stripped
+        # Already valid JSON object
+        if stripped.startswith("{"):
+            return stripped
+        # Looks like key-value pairs without braces: "cmd":"INFER",...
+        if stripped.startswith('"'):
+            return "{" + stripped.rstrip("}") + "}"
+        return stripped
+
     async def _process_request(self, line: str) -> str:
         """Parse a JSON line request and dispatch to handler."""
+        # Try to fix common JSON issues before parsing
+        fixed = self._try_fix_json(line)
         try:
-            request = json.loads(line)
-        except json.JSONDecodeError as e:
-            self._log("ERROR", f"Invalid JSON: {e}")
-            resp = make_tcp_error("UNKNOWN", ErrorCode.INVALID_CMD, f"Invalid JSON: {e}")
-            return resp.model_dump_json()
+            request = json.loads(fixed)
+        except json.JSONDecodeError:
+            # If fix didn't help, try original
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as e:
+                self._log("ERROR", f"Invalid JSON: {e} | raw={line[:200]}")
+                resp = make_tcp_error(
+                    "UNKNOWN", ErrorCode.INVALID_CMD,
+                    f"Invalid JSON: {e}. Expected format: {{\"cmd\":\"INFER\",\"job_id\":\"001\",...}}",
+                )
+                return resp.model_dump_json()
 
         cmd = request.get("cmd", "").upper()
         self._log("INFO", f"CMD={cmd} job_id={request.get('job_id', '-')}")
