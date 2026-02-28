@@ -19,6 +19,11 @@ public partial class MainForm : Form
     private List<ProjectInfo> _projects = new();
     private string? _selectedProjectId;
 
+    // Per-project log state: project_id -> next_index for incremental fetch
+    private readonly Dictionary<string, int> _logNextIndex = new();
+    // Per-project log auto-refresh timers
+    private readonly Dictionary<string, System.Windows.Forms.Timer> _logTimers = new();
+
     // --- Left panel controls ---
     private Panel _leftPanel = null!;
     private TextBox _searchBox = null!;
@@ -721,6 +726,124 @@ public partial class MainForm : Form
 
         contentPanel.Controls.Add(btnRunInfer);
         contentPanel.Controls.Add(txtInferResult);
+        y += 140;
+
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Section: Log =====
+        AddSectionHeader(contentPanel, "Log", leftMargin, ref y);
+
+        var flowLogButtons = new FlowLayoutPanel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 32),
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = false
+        };
+
+        var chkAutoRefresh = new CheckBox
+        {
+            Text = "Auto Refresh (2s)",
+            Checked = true,
+            Size = new Size(140, 24),
+            Font = new Font("Segoe UI", 9),
+            Margin = new Padding(0, 3, 12, 0)
+        };
+        flowLogButtons.Controls.Add(chkAutoRefresh);
+
+        var btnRefreshLog = new Button
+        {
+            Text = "Refresh",
+            Size = new Size(80, 26),
+            FlatStyle = FlatStyle.Flat,
+            Margin = new Padding(0, 0, 8, 0)
+        };
+        flowLogButtons.Controls.Add(btnRefreshLog);
+
+        var btnClearLog = new Button
+        {
+            Text = "Clear",
+            Size = new Size(80, 26),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(220, 53, 69),
+            ForeColor = Color.White,
+            Margin = new Padding(0, 0, 8, 0)
+        };
+        flowLogButtons.Controls.Add(btnClearLog);
+
+        contentPanel.Controls.Add(flowLogButtons);
+        y += 36;
+
+        var txtLog = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 180),
+            Font = new Font("Consolas", 8.5f),
+            BackColor = Color.FromArgb(30, 30, 30),
+            ForeColor = Color.FromArgb(220, 220, 220),
+            Name = "txtLog"
+        };
+        contentPanel.Controls.Add(txtLog);
+
+        // Initialize log index tracking
+        var pid = project.ProjectId;
+        if (!_logNextIndex.ContainsKey(pid))
+            _logNextIndex[pid] = 0;
+
+        // Refresh log function
+        async Task RefreshLogAsync()
+        {
+            var resp = await _apiClient.GetProjectLogsAsync(pid, _logNextIndex[pid]);
+            if (resp != null && resp.Entries.Count > 0)
+            {
+                _logNextIndex[pid] = resp.NextIndex;
+                var lines = resp.Entries.Select(e =>
+                    $"[{e.Timestamp}] [{e.Level}] [{e.Source}] {e.Message}");
+                txtLog.AppendText(string.Join(Environment.NewLine, lines) + Environment.NewLine);
+            }
+        }
+
+        // Manual refresh
+        btnRefreshLog.Click += async (s, e) => await RefreshLogAsync();
+
+        // Clear log
+        btnClearLog.Click += async (s, e) =>
+        {
+            await _apiClient.ClearProjectLogsAsync(pid);
+            _logNextIndex[pid] = 0;
+            txtLog.Clear();
+        };
+
+        // Auto-refresh timer
+        var logTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        logTimer.Tick += async (s, e) =>
+        {
+            if (chkAutoRefresh.Checked)
+                await RefreshLogAsync();
+        };
+        logTimer.Start();
+
+        // Track timer for cleanup
+        if (_logTimers.ContainsKey(pid))
+        {
+            _logTimers[pid].Stop();
+            _logTimers[pid].Dispose();
+        }
+        _logTimers[pid] = logTimer;
+
+        chkAutoRefresh.CheckedChanged += (s, e) =>
+        {
+            if (chkAutoRefresh.Checked)
+                logTimer.Start();
+            else
+                logTimer.Stop();
+        };
     }
 
     private static void AddSectionHeader(Panel parent, string text, int x, ref int y)
@@ -773,6 +896,12 @@ public partial class MainForm : Form
     {
         _healthTimer.Stop();
         _refreshTimer.Stop();
+        foreach (var timer in _logTimers.Values)
+        {
+            timer.Stop();
+            timer.Dispose();
+        }
+        _logTimers.Clear();
         _apiClient.Dispose();
         base.OnFormClosing(e);
     }

@@ -38,6 +38,7 @@ class ProjectState:
         self.enabled: bool = config.enabled
         self.tcp_running: bool = False
         self.stats: ProjectStats = ProjectStats()
+        self.log_buffer: ProjectLogBuffer = ProjectLogBuffer()
         self._lock = threading.Lock()
 
     @property
@@ -80,6 +81,39 @@ class ProjectState:
         with open(active_path, "w", encoding="utf-8") as f:
             json.dump({"version": version, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}, f, indent=2)
         return True
+
+
+class ProjectLogBuffer:
+    """Thread-safe ring buffer for per-project log entries."""
+
+    def __init__(self, max_entries: int = 500):
+        self._max = max_entries
+        self._entries: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def append(self, level: str, source: str, message: str) -> None:
+        """Add a log entry."""
+        entry = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "level": level,
+            "source": source,
+            "msg": message,
+        }
+        with self._lock:
+            self._entries.append(entry)
+            if len(self._entries) > self._max:
+                self._entries = self._entries[-self._max :]
+
+    def get_entries(self, since_index: int = 0) -> tuple[list[dict[str, Any]], int]:
+        """Return entries from since_index onward and the new next_index."""
+        with self._lock:
+            entries = self._entries[since_index:]
+            next_index = len(self._entries)
+        return entries, next_index
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
 
 
 class ProjectStats:

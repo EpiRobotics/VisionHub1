@@ -40,6 +40,7 @@ class TcpProjectServer:
         on_infer: Any,  # async callable(project_id, job_id, image_path, options) -> InferResult
         on_status: Any,  # async callable(project_id) -> dict
         on_set_model: Any,  # async callable(project_id, version) -> bool
+        log_buffer: Any = None,  # ProjectLogBuffer instance
     ):
         self.project_id = project_id
         self.host = host
@@ -47,8 +48,20 @@ class TcpProjectServer:
         self._on_infer = on_infer
         self._on_status = on_status
         self._on_set_model = on_set_model
+        self._log_buffer = log_buffer
         self._server: asyncio.AbstractServer | None = None
         self._running = False
+
+    def _log(self, level: str, msg: str) -> None:
+        """Write to both Python logger and the project log buffer."""
+        if level == "INFO":
+            logger.info("[%s] %s", self.project_id, msg)
+        elif level == "ERROR":
+            logger.error("[%s] %s", self.project_id, msg)
+        else:
+            logger.debug("[%s] %s", self.project_id, msg)
+        if self._log_buffer is not None:
+            self._log_buffer.append(level, "TCP", msg)
 
     async def start(self) -> None:
         """Start the TCP server."""
@@ -81,7 +94,7 @@ class TcpProjectServer:
     ) -> None:
         """Handle a single client connection (supports multiple requests)."""
         peer = writer.get_extra_info("peername")
-        logger.debug("TCP client connected: %s (project=%s)", peer, self.project_id)
+        self._log("INFO", f"Client connected: {peer}")
 
         try:
             while self._running:
@@ -97,14 +110,16 @@ class TcpProjectServer:
                 if not line_str:
                     continue
 
+                self._log("DEBUG", f"RECV: {line_str[:500]}")
                 response = await self._process_request(line_str)
+                self._log("DEBUG", f"SEND: {response[:500]}")
                 response_bytes = (response + "\n").encode("utf-8")
                 writer.write(response_bytes)
                 await writer.drain()
         except ConnectionResetError:
-            logger.debug("Client disconnected: %s", peer)
-        except Exception:
-            logger.exception("Error handling TCP client: %s", peer)
+            self._log("INFO", f"Client disconnected: {peer}")
+        except Exception as exc:
+            self._log("ERROR", f"Error handling client {peer}: {exc}")
         finally:
             try:
                 writer.close()
@@ -117,10 +132,12 @@ class TcpProjectServer:
         try:
             request = json.loads(line)
         except json.JSONDecodeError as e:
+            self._log("ERROR", f"Invalid JSON: {e}")
             resp = make_tcp_error("UNKNOWN", ErrorCode.INVALID_CMD, f"Invalid JSON: {e}")
             return resp.model_dump_json()
 
         cmd = request.get("cmd", "").upper()
+        self._log("INFO", f"CMD={cmd} job_id={request.get('job_id', '-')}")
 
         if cmd == "PING":
             return self._handle_ping()
@@ -163,8 +180,10 @@ class TcpProjectServer:
             result: InferResult = await self._on_infer(
                 self.project_id, job_id, image_path, options
             )
+            self._log("INFO", f"INFER result: pred={result.pred} score={result.score:.4f} job={job_id}")
             return result.to_json_line()
         except Exception as e:
+            self._log("ERROR", f"INFER failed: {e}")
             result = make_error_result(
                 job_id=job_id,
                 project_id=self.project_id,
@@ -224,6 +243,7 @@ class TcpServerManager:
         on_infer: Any,
         on_status: Any,
         on_set_model: Any,
+        log_buffer: Any = None,
     ) -> TcpProjectServer:
         """Start a TCP server for a project."""
         if project_id in self._servers:
@@ -236,6 +256,7 @@ class TcpServerManager:
             on_infer=on_infer,
             on_status=on_status,
             on_set_model=on_set_model,
+            log_buffer=log_buffer,
         )
         await server.start()
         self._servers[project_id] = server

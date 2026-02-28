@@ -245,6 +245,38 @@ public class VisionHubApiClient : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // Project Logs
+    // ------------------------------------------------------------------
+
+    public async Task<ProjectLogsResponse?> GetProjectLogsAsync(string projectId, int sinceIndex = 0)
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync($"{_baseUrl}/projects/{projectId}/logs?since={sinceIndex}");
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<ProjectLogsResponse>(json);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<bool> ClearProjectLogsAsync(string projectId)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync($"{_baseUrl}/projects/{projectId}/logs/clear", null);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // TCP Port test (direct TCP ping)
     // ------------------------------------------------------------------
 

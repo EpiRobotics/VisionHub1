@@ -64,3 +64,33 @@ public class ProjectStats
     [JsonProperty("last_result_time")]
     public string LastResultTime { get; set; } = "";
 }
+
+/// <summary>
+/// Log entry from GET /projects/{id}/logs
+/// </summary>
+public class LogEntry
+{
+    [JsonProperty("ts")]
+    public string Timestamp { get; set; } = "";
+
+    [JsonProperty("level")]
+    public string Level { get; set; } = "";
+
+    [JsonProperty("source")]
+    public string Source { get; set; } = "";
+
+    [JsonProperty("msg")]
+    public string Message { get; set; } = "";
+}
+
+/// <summary>
+/// Response from GET /projects/{id}/logs
+/// </summary>
+public class ProjectLogsResponse
+{
+    [JsonProperty("entries")]
+    public List<LogEntry> Entries { get; set; } = new();
+
+    [JsonProperty("next_index")]
+    public int NextIndex { get; set; }
+}

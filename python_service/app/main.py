@@ -129,6 +129,7 @@ class ServiceApp:
                 on_infer=self.run_inference,
                 on_status=self._get_project_status,
                 on_set_model=self._set_active_model,
+                log_buffer=state.log_buffer,
             )
             state.tcp_running = True
         except Exception:
@@ -163,9 +164,13 @@ class ServiceApp:
         if state is None:
             return make_error_result(job_id, project_id, ErrorCode.PROJECT_NOT_FOUND, "Project not found")
         if not state.enabled:
+            state.log_buffer.append("ERROR", "SERVICE", f"Inference rejected: project disabled (job={job_id})")
             return make_error_result(job_id, project_id, ErrorCode.PROJECT_DISABLED, "Project is disabled")
         if not state.is_model_loaded:
+            state.log_buffer.append("ERROR", "SERVICE", f"Inference rejected: model not loaded (job={job_id})")
             return make_error_result(job_id, project_id, ErrorCode.MODEL_NOT_LOADED, "Model not loaded")
+
+        state.log_buffer.append("INFO", "SERVICE", f"Inference submitted: job={job_id} image={image_path}")
 
         job = Job(
             job_id=job_id,

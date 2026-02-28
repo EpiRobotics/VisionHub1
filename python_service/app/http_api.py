@@ -260,4 +260,24 @@ def create_api(app_state: Any) -> FastAPI:
     async def get_all_queues() -> dict[str, Any]:
         return app_state.gpu_pool.get_all_queue_stats()
 
+    # ------------------------------------------------------------------
+    # Project Logs
+    # ------------------------------------------------------------------
+
+    @api.get("/projects/{project_id}/logs")
+    async def get_project_logs(project_id: str, since: int = 0) -> dict[str, Any]:
+        state = app_state.project_manager.get_project(project_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        entries, next_index = state.log_buffer.get_entries(since)
+        return {"entries": entries, "next_index": next_index}
+
+    @api.post("/projects/{project_id}/logs/clear")
+    async def clear_project_logs(project_id: str) -> dict[str, Any]:
+        state = app_state.project_manager.get_project(project_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        state.log_buffer.clear()
+        return {"ok": True}
+
     return api
