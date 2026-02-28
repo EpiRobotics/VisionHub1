@@ -1,0 +1,99 @@
+# VisionHub Project Configuration - Glyph/Character PatchCore Detection
+# Copy to DATA_ROOT/projects/<project_id>/project.yaml
+#
+# This project type detects per-character anomalies using PatchCore.
+# Each character class gets its own memory bank model (.joblib).
+#
+# Inference requires BOTH an image AND a JSON annotation file:
+#   TCP: {"cmd":"INFER","job_id":"001","image_path":"...","options":{"json_path":"..."}}
+#
+# JSON annotation format:
+#   {
+#     "image_name": "img001.jpg",
+#     "items": [
+#       {"ch": "A", "cx": 100, "cy": 50, "w": 30, "h": 40},
+#       {"ch": "B", "cx": 150, "cy": 50, "w": 32, "h": 40}
+#     ]
+#   }
+#
+# Training dataset structure:
+#   datasets/
+#     ok/        # OK sample images (with correct characters)
+#     json/      # JSON annotation files (one per image, matching names)
+
+project_id: label_check
+display_name: "Label Check - Character Defect Detection"
+enabled: true
+
+io:
+  tcp_port: 9201              # Independent port for this project
+  bind_host: "0.0.0.0"
+  allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
+  output_dir: "${DATA_ROOT}/projects/label_check/runs"
+
+image:
+  file_ready:
+    mode: "size_stable"       # size_stable / open_retry
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "gray"               # glyph detection works on grayscale
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "glyph_patchcore_v1"
+  model:
+    active: "${PROJECT_DIR}/active_model.json"
+  preprocess:
+    normalize: "glyph"        # [0.5, 0.5, 0.5] mean/std normalization
+    align:
+      enabled: false
+  infer:
+    device: "cuda"            # cuda / cpu / auto
+    use_fp16: true            # FP16 for GPU inference (faster, less memory)
+    use_gpu_knn: true         # GPU-accelerated kNN (avoid CPU roundtrip)
+    cnn_batch: 64             # Batch size for CNN forward pass
+    knn_bank_block: 20000     # Block size for GPU kNN (controls memory usage)
+  postprocess:
+    decision:
+      score_method: "per_glyph"   # Each glyph scored independently
+      threshold: "from_model"     # Per-class thresholds from training
+      thr_global: null            # Optional: override all class thresholds (e.g., 2.05)
+    export:
+      save_overlay: true          # Save overlay with per-glyph OK/NG annotations
+      save_details_csv: false     # Save per-glyph details CSV
+      save_summary_csv: false     # Save per-image summary CSV
+
+  # Glyph PatchCore training parameters
+  _train:
+    # --- Glyph cropping ---
+    pad: 2                        # Padding pixels around each glyph bounding box
+
+    # --- CNN feature extraction ---
+    img_size: 128                 # Resize each glyph crop to this size (square)
+    # Uses ResNet18 layer2 (shallow features, good for character stroke details)
+
+    # --- Memory bank ---
+    max_patches_per_class: 30000  # Maximum patches in memory bank per class
+    min_per_class: 10             # Minimum OK images per class to train
+
+    # --- kNN scoring ---
+    k: 1                          # Number of nearest neighbors
+    score_mode: "topk"            # "topk" (mean of top-K patch distances) or "max"
+    topk: 10                      # Number of top patches to average (when score_mode=topk)
+
+    # --- Threshold ---
+    p_thr: 0.995                  # Quantile of OK score distribution for threshold
+    # Each class gets its own threshold based on its OK samples
+
+    # --- Model compression (optional, post-training) ---
+    shrink:
+      enabled: false              # Enable memory bank compression
+      max_bank: 15000             # Target bank size after compression
+      recompute_thr: true         # Recompute threshold after compression

@@ -20,9 +20,13 @@ torchvision = ">=0.15"
 matplotlib = "^3.7"
 tqdm = "^4.60"
 faiss-cpu = {version = "^1.7", optional = true}
+joblib = "^1.3"
+scikit-learn = "^1.3"
+opencv-python-headless = "^4.8"
 
 [tool.poetry.extras]
 faiss = ["faiss-cpu"]
+glyph = ["joblib", "scikit-learn", "opencv-python-headless"]
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.4.0"
