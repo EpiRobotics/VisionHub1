@@ -359,8 +359,7 @@ public partial class MainForm : Form
         var tabPage = new TabPage(project.ProjectId)
         {
             Name = tabName,
-            AutoScroll = true,
-            Padding = new Padding(12)
+            Padding = new Padding(0)
         };
 
         BuildProjectTabContent(tabPage, project);
@@ -371,37 +370,50 @@ public partial class MainForm : Form
     private void BuildProjectTabContent(TabPage tab, ProjectInfo project)
     {
         tab.Controls.Clear();
-        int y = 12;
 
-        // --- Section: Basic Info ---
+        // Use a scrollable panel for all content
+        var contentPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            Padding = new Padding(16, 12, 16, 12)
+        };
+        tab.Controls.Add(contentPanel);
+
+        // Calculate usable width (will be updated on resize)
+        int contentWidth = Math.Max(contentPanel.ClientSize.Width - 40, 600);
+        int leftMargin = 16;
+        int y = 8;
+
+        // ===== Section: Basic Info =====
         var lblTitle = new Label
         {
-            Text = $"{project.DisplayName}",
+            Text = project.DisplayName,
             Font = new Font("Segoe UI", 14, FontStyle.Bold),
-            Location = new Point(12, y),
-            AutoSize = true
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 30)
         };
-        tab.Controls.Add(lblTitle);
-        y += 35;
+        contentPanel.Controls.Add(lblTitle);
+        y += 36;
 
         var lblInfo = new Label
         {
-            Text = $"Project ID: {project.ProjectId}    |    Port: {project.TcpPort}    |    Algorithm: {project.Algo}",
+            Text = $"Project ID: {project.ProjectId}   |   Port: {project.TcpPort}   |   Algorithm: {project.Algo}",
             Font = new Font("Segoe UI", 10),
-            Location = new Point(12, y),
-            AutoSize = true,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 22),
             ForeColor = Color.DimGray
         };
-        tab.Controls.Add(lblInfo);
+        contentPanel.Controls.Add(lblInfo);
         y += 28;
 
-        // Enabled toggle
+        // Enabled toggle + Model status row
         var chkEnabled = new CheckBox
         {
             Text = "Enabled",
             Checked = project.Enabled,
-            Location = new Point(12, y),
-            AutoSize = true,
+            Location = new Point(leftMargin, y),
+            Size = new Size(100, 24),
             Font = new Font("Segoe UI", 10),
             Tag = project.ProjectId
         };
@@ -412,10 +424,8 @@ public partial class MainForm : Form
                 await _apiClient.EnableProjectAsync(pid, cb.Checked);
             }
         };
-        tab.Controls.Add(chkEnabled);
-        y += 32;
+        contentPanel.Controls.Add(chkEnabled);
 
-        // Model status
         var modelStatus = project.ModelLoaded
             ? $"Model: {project.ModelVersion} (Loaded)"
             : "Model: Not Loaded";
@@ -425,21 +435,31 @@ public partial class MainForm : Form
             Text = modelStatus,
             Font = new Font("Segoe UI", 10, FontStyle.Bold),
             ForeColor = modelColor,
-            Location = new Point(12, y),
-            AutoSize = true,
+            Location = new Point(leftMargin + 110, y + 2),
+            Size = new Size(300, 22),
             Name = "lblModel"
         };
-        tab.Controls.Add(lblModel);
+        contentPanel.Controls.Add(lblModel);
+        y += 32;
 
-        // Load model button
+        // Action buttons row
+        var flowButtons = new FlowLayoutPanel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 36),
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = false
+        };
+
         var btnLoadModel = new Button
         {
             Text = "Load Model",
-            Size = new Size(100, 28),
-            Location = new Point(350, y - 3),
+            Size = new Size(110, 30),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(40, 167, 69),
             ForeColor = Color.White,
+            Margin = new Padding(0, 0, 8, 0),
             Tag = project.ProjectId
         };
         btnLoadModel.Click += async (s, e) =>
@@ -454,31 +474,16 @@ public partial class MainForm : Form
                 await RefreshProjectsAsync();
             }
         };
-        tab.Controls.Add(btnLoadModel);
-        y += 35;
+        flowButtons.Controls.Add(btnLoadModel);
 
-        // TCP status
-        var tcpStatus = project.TcpRunning ? "TCP: Running" : "TCP: Stopped";
-        var tcpColor = project.TcpRunning ? Color.Green : Color.Red;
-        var lblTcp = new Label
-        {
-            Text = tcpStatus,
-            Font = new Font("Segoe UI", 10),
-            ForeColor = tcpColor,
-            Location = new Point(12, y),
-            AutoSize = true
-        };
-        tab.Controls.Add(lblTcp);
-
-        // TCP ping button
         var btnPingTcp = new Button
         {
             Text = "Ping TCP",
-            Size = new Size(80, 28),
-            Location = new Point(350, y - 3),
+            Size = new Size(90, 30),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(108, 117, 125),
             ForeColor = Color.White,
+            Margin = new Padding(0, 0, 8, 0),
             Tag = project.TcpPort
         };
         btnPingTcp.Click += async (s, e) =>
@@ -492,73 +497,58 @@ public partial class MainForm : Form
                 btn.Text = "Ping TCP";
             }
         };
-        tab.Controls.Add(btnPingTcp);
-        y += 40;
+        flowButtons.Controls.Add(btnPingTcp);
 
-        // Separator
-        var sep = new Label
+        var tcpStatus = project.TcpRunning ? "TCP: Running" : "TCP: Stopped";
+        var tcpColor = project.TcpRunning ? Color.Green : Color.Red;
+        var lblTcp = new Label
         {
-            BorderStyle = BorderStyle.Fixed3D,
-            Location = new Point(12, y),
-            Size = new Size(700, 2)
+            Text = tcpStatus,
+            Font = new Font("Segoe UI", 10),
+            ForeColor = tcpColor,
+            Size = new Size(120, 26),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(8, 4, 0, 0)
         };
-        tab.Controls.Add(sep);
-        y += 12;
+        flowButtons.Controls.Add(lblTcp);
 
-        // --- Section: Statistics ---
-        var lblStatsHeader = new Label
-        {
-            Text = "Statistics",
-            Font = new Font("Segoe UI", 12, FontStyle.Bold),
-            Location = new Point(12, y),
-            AutoSize = true
-        };
-        tab.Controls.Add(lblStatsHeader);
-        y += 28;
+        contentPanel.Controls.Add(flowButtons);
+        y += 42;
+
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Section: Statistics =====
+        AddSectionHeader(contentPanel, "Statistics", leftMargin, ref y);
 
         var stats = project.Stats;
         var statsText = stats != null
-            ? $"Total: {stats.TotalJobs}    OK: {stats.OkCount}    NG: {stats.NgCount}    " +
-              $"Error: {stats.ErrorCount}    Avg Infer: {stats.AvgInferMs:F1}ms    Last: {stats.LastResultTime}"
+            ? $"Total: {stats.TotalJobs}   OK: {stats.OkCount}   NG: {stats.NgCount}   " +
+              $"Error: {stats.ErrorCount}   Avg Infer: {stats.AvgInferMs:F1}ms   Last: {stats.LastResultTime}"
             : "No statistics available";
 
         var lblStats = new Label
         {
             Text = statsText,
             Font = new Font("Segoe UI", 9.5f),
-            Location = new Point(12, y),
-            AutoSize = true,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 22),
             Name = "lblStats"
         };
-        tab.Controls.Add(lblStats);
-        y += 30;
-
-        // Separator
-        var sep2 = new Label
-        {
-            BorderStyle = BorderStyle.Fixed3D,
-            Location = new Point(12, y),
-            Size = new Size(700, 2)
-        };
-        tab.Controls.Add(sep2);
-        y += 12;
-
-        // --- Section: Training ---
-        var lblTrainHeader = new Label
-        {
-            Text = "Training",
-            Font = new Font("Segoe UI", 12, FontStyle.Bold),
-            Location = new Point(12, y),
-            AutoSize = true
-        };
-        tab.Controls.Add(lblTrainHeader);
+        contentPanel.Controls.Add(lblStats);
         y += 28;
+
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Section: Training =====
+        AddSectionHeader(contentPanel, "Training", leftMargin, ref y);
 
         var btnStartTrain = new Button
         {
             Text = "Start Training",
-            Size = new Size(120, 32),
-            Location = new Point(12, y),
+            Size = new Size(130, 32),
+            Location = new Point(leftMargin, y),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(0, 123, 255),
             ForeColor = Color.White,
@@ -569,8 +559,8 @@ public partial class MainForm : Form
         {
             Text = "",
             Font = new Font("Segoe UI", 9.5f),
-            Location = new Point(145, y + 6),
-            AutoSize = true,
+            Location = new Point(leftMargin + 140, y + 6),
+            Size = new Size(contentWidth - 150, 22),
             Name = "lblTrainStatus"
         };
 
@@ -579,8 +569,8 @@ public partial class MainForm : Form
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
-            Location = new Point(12, y + 40),
-            Size = new Size(700, 120),
+            Location = new Point(leftMargin, y + 40),
+            Size = new Size(contentWidth, 110),
             Font = new Font("Consolas", 9),
             Name = "txtTrainLog"
         };
@@ -596,7 +586,6 @@ public partial class MainForm : Form
                 var resp = await _apiClient.StartTrainingAsync(pid);
                 if (resp != null && resp.Ok)
                 {
-                    // Poll training status
                     var trainJobId = resp.TrainJobId;
                     while (true)
                     {
@@ -625,46 +614,31 @@ public partial class MainForm : Form
             }
         };
 
-        tab.Controls.Add(btnStartTrain);
-        tab.Controls.Add(lblTrainStatus);
-        tab.Controls.Add(txtTrainLog);
-        y += 170;
+        contentPanel.Controls.Add(btnStartTrain);
+        contentPanel.Controls.Add(lblTrainStatus);
+        contentPanel.Controls.Add(txtTrainLog);
+        y += 160;
 
-        // Separator
-        var sep3 = new Label
-        {
-            BorderStyle = BorderStyle.Fixed3D,
-            Location = new Point(12, y),
-            Size = new Size(700, 2)
-        };
-        tab.Controls.Add(sep3);
-        y += 12;
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
 
-        // --- Section: Test Inference ---
-        var lblTestHeader = new Label
-        {
-            Text = "Test Inference",
-            Font = new Font("Segoe UI", 12, FontStyle.Bold),
-            Location = new Point(12, y),
-            AutoSize = true
-        };
-        tab.Controls.Add(lblTestHeader);
-        y += 28;
+        // ===== Section: Test Inference =====
+        AddSectionHeader(contentPanel, "Test Inference", leftMargin, ref y);
 
         var txtImagePath = new TextBox
         {
             PlaceholderText = "Enter image path or browse...",
-            Location = new Point(12, y),
-            Size = new Size(500, 25),
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 160, 25),
             Name = "txtImagePath"
         };
-        tab.Controls.Add(txtImagePath);
+        contentPanel.Controls.Add(txtImagePath);
 
         var btnBrowse = new Button
         {
             Text = "Browse",
             Size = new Size(70, 26),
-            Location = new Point(518, y - 1),
+            Location = new Point(leftMargin + contentWidth - 150, y - 1),
             FlatStyle = FlatStyle.Flat
         };
         btnBrowse.Click += (s, e) =>
@@ -678,13 +652,13 @@ public partial class MainForm : Form
                 txtImagePath.Text = ofd.FileName;
             }
         };
-        tab.Controls.Add(btnBrowse);
+        contentPanel.Controls.Add(btnBrowse);
 
         var btnRunInfer = new Button
         {
             Text = "Run",
-            Size = new Size(60, 26),
-            Location = new Point(594, y - 1),
+            Size = new Size(70, 26),
+            Location = new Point(leftMargin + contentWidth - 72, y - 1),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(40, 167, 69),
             ForeColor = Color.White,
@@ -696,8 +670,8 @@ public partial class MainForm : Form
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
-            Location = new Point(12, y + 32),
-            Size = new Size(700, 100),
+            Location = new Point(leftMargin, y + 32),
+            Size = new Size(contentWidth, 100),
             Font = new Font("Consolas", 9),
             Name = "txtInferResult"
         };
@@ -744,8 +718,33 @@ public partial class MainForm : Form
             }
         };
 
-        tab.Controls.Add(btnRunInfer);
-        tab.Controls.Add(txtInferResult);
+        contentPanel.Controls.Add(btnRunInfer);
+        contentPanel.Controls.Add(txtInferResult);
+    }
+
+    private static void AddSectionHeader(Panel parent, string text, int x, ref int y)
+    {
+        var lbl = new Label
+        {
+            Text = text,
+            Font = new Font("Segoe UI", 12, FontStyle.Bold),
+            Location = new Point(x, y),
+            Size = new Size(400, 26)
+        };
+        parent.Controls.Add(lbl);
+        y += 30;
+    }
+
+    private static void AddSeparator(Panel parent, int x, ref int y, int width)
+    {
+        var sep = new Label
+        {
+            BorderStyle = BorderStyle.Fixed3D,
+            Location = new Point(x, y),
+            Size = new Size(width, 2)
+        };
+        parent.Controls.Add(sep);
+        y += 12;
     }
 
     private void UpdateProjectTabContent(TabPage tab, ProjectInfo project)
