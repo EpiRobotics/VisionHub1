@@ -326,6 +326,29 @@ def create_api(app_state: Any) -> FastAPI:
             "overlay_output_path": overlay_path,
         }
 
+    @api.post("/projects/{project_id}/set_threshold")
+    async def set_threshold(project_id: str, thr_global: float | None = None) -> dict[str, Any]:
+        """Set the global NG threshold for a project at runtime.
+
+        For glyph_patchcore_v1: overrides per-class thresholds.
+        A glyph with score >= thr_global is judged NG.
+        Set to null (omit parameter) to revert to per-class trained thresholds.
+
+        For resnet_classify_v1: sets the NG probability threshold.
+        """
+        state = app_state.project_manager.get_project(project_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+        # Store in the pipeline postprocess.decision config so it persists for each inference
+        state.config.pipeline.postprocess.decision.thr_global = thr_global
+
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "thr_global": thr_global,
+        }
+
     # ------------------------------------------------------------------
     # Label Training Workflow
     # ------------------------------------------------------------------

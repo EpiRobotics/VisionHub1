@@ -295,6 +295,22 @@ public class VisionHubApiClient : IDisposable
         }
     }
 
+    public async Task<bool> SetThresholdAsync(string projectId, double? thrGlobal)
+    {
+        try
+        {
+            var url = thrGlobal.HasValue
+                ? $"{_baseUrl}/projects/{projectId}/set_threshold?thr_global={thrGlobal.Value}"
+                : $"{_baseUrl}/projects/{projectId}/set_threshold";
+            var response = await _httpClient.PostAsync(url, null);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Label Training Workflow
     // ------------------------------------------------------------------

@@ -95,6 +95,7 @@ class InferConfig(BaseModel):
 class DecisionConfig(BaseModel):
     score_method: str = "q999"
     threshold: str = "from_model"
+    thr_global: float | None = None  # Runtime global threshold override (set via HTTP API)
 
 
 class RegionsExportConfig(BaseModel):

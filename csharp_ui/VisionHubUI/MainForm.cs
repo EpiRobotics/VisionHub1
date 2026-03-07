@@ -24,6 +24,9 @@ public partial class MainForm : Form
     // Per-project log auto-refresh timers
     private readonly Dictionary<string, System.Windows.Forms.Timer> _logTimers = new();
 
+    // Suppress tab switching during automatic timer-driven refreshes
+    private bool _suppressTabSwitch = false;
+
     // --- Left panel controls ---
     private Panel _leftPanel = null!;
     private TextBox _searchBox = null!;
@@ -277,7 +280,11 @@ public partial class MainForm : Form
         if (project != null)
         {
             _selectedProjectId = project.ProjectId;
-            ShowProjectTab(project);
+            // Only switch tab on manual clicks, not during timer-driven refresh
+            if (!_suppressTabSwitch)
+            {
+                ShowProjectTab(project);
+            }
         }
     }
 
@@ -311,8 +318,16 @@ public partial class MainForm : Form
 
     private async Task RefreshProjectsAsync()
     {
-        _projects = await _apiClient.GetProjectsAsync();
-        UpdateProjectListDisplay();
+        _suppressTabSwitch = true;
+        try
+        {
+            _projects = await _apiClient.GetProjectsAsync();
+            UpdateProjectListDisplay();
+        }
+        finally
+        {
+            _suppressTabSwitch = false;
+        }
     }
 
     private void UpdateProjectListDisplay()
@@ -1490,6 +1505,112 @@ public partial class MainForm : Form
                 lblOverlayResult.ForeColor = Color.Red;
             }
             btnApplyOverlay.Enabled = true;
+        };
+
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Step 5: NG Threshold Setting (Runtime) =====
+        AddSectionHeader(contentPanel, "Step 5: NG Threshold (Runtime)", leftMargin, ref y);
+
+        var lblThrDesc = new Label
+        {
+            Text = "Set the global NG threshold for a project. A glyph with score >= threshold is judged NG.\n" +
+                   "Leave empty or set 0 to use per-class trained thresholds (from model).",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 36)
+        };
+        contentPanel.Controls.Add(lblThrDesc);
+        y += 40;
+
+        var lblThrInput = new Label
+        {
+            Text = "Global NG Threshold:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(160, 20)
+        };
+        contentPanel.Controls.Add(lblThrInput);
+
+        var txtThrGlobal = new TextBox
+        {
+            PlaceholderText = "e.g. 2.50 (leave empty for per-class)",
+            Location = new Point(leftMargin + 165, y - 2),
+            Size = new Size(160, 25),
+            Name = "txtThrGlobal"
+        };
+        contentPanel.Controls.Add(txtThrGlobal);
+
+        var btnApplyThr = new Button
+        {
+            Text = "Apply Threshold",
+            Size = new Size(130, 26),
+            Location = new Point(leftMargin + 340, y - 2),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(0, 123, 255),
+            ForeColor = Color.White
+        };
+        contentPanel.Controls.Add(btnApplyThr);
+
+        var lblThrResult = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin + 480, y),
+            Size = new Size(contentWidth - 480, 20)
+        };
+        contentPanel.Controls.Add(lblThrResult);
+        y += 32;
+
+        btnApplyThr.Click += async (s, e) =>
+        {
+            var projectId = txtTargetProject.Text.Trim();
+            if (string.IsNullOrEmpty(projectId))
+            {
+                MessageBox.Show("Please set the Target Project ID in Step 3.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            double? thrValue = null;
+            var thrText = txtThrGlobal.Text.Trim();
+            if (!string.IsNullOrEmpty(thrText))
+            {
+                if (double.TryParse(thrText, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double parsed) && parsed > 0)
+                {
+                    thrValue = parsed;
+                }
+                else
+                {
+                    MessageBox.Show("Invalid threshold value. Use a positive number (e.g. 2.50).",
+                        "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
+            btnApplyThr.Enabled = false;
+            var ok = await _apiClient.SetThresholdAsync(projectId, thrValue);
+            if (ok)
+            {
+                if (thrValue.HasValue)
+                {
+                    lblThrResult.Text = $"Threshold set to {thrValue.Value:F2} for {projectId}";
+                }
+                else
+                {
+                    lblThrResult.Text = $"Using per-class trained thresholds for {projectId}";
+                }
+                lblThrResult.ForeColor = Color.Green;
+            }
+            else
+            {
+                lblThrResult.Text = "Failed. Check service connection and project ID.";
+                lblThrResult.ForeColor = Color.Red;
+            }
+            btnApplyThr.Enabled = true;
         };
 
         // Start Training handler
