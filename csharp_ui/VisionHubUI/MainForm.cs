@@ -197,6 +197,11 @@ public partial class MainForm : Form
         // Ensure correct z-order: Fill control must be highest z-order
         // so it fills remaining space AFTER Left-docked panel is placed.
         _tabControl.BringToFront();
+
+        // ============================================================
+        // Permanent Tab: Label Training Workflow
+        // ============================================================
+        BuildLabelTrainingTab();
     }
 
     private void SetupTimers()
@@ -844,6 +849,604 @@ public partial class MainForm : Form
             else
                 logTimer.Stop();
         };
+    }
+
+    // ==================================================================
+    // Label Training Workflow Tab
+    // ==================================================================
+
+    private void BuildLabelTrainingTab()
+    {
+        var tab = new TabPage("Label Training")
+        {
+            Name = "tab_label_training",
+            Padding = new Padding(0)
+        };
+
+        var contentPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            Padding = new Padding(16, 12, 16, 12)
+        };
+        tab.Controls.Add(contentPanel);
+
+        int contentWidth = Math.Max(700, 600);
+        int leftMargin = 16;
+        int y = 8;
+
+        // ===== Title =====
+        var lblTitle = new Label
+        {
+            Text = "Label (Glyph) Training Workflow",
+            Font = new Font("Segoe UI", 14, FontStyle.Bold),
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 30)
+        };
+        contentPanel.Controls.Add(lblTitle);
+        y += 32;
+
+        var lblDesc = new Label
+        {
+            Text = "Step-by-step training pipeline for character/glyph anomaly detection using PatchCore.\n" +
+                   "Step 1: Crop glyphs from images + JSON annotations into glyph_bank.\n" +
+                   "Step 2: Review glyph_bank class statistics.\n" +
+                   "Step 3: Train per-class PatchCore memory banks.",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 60)
+        };
+        contentPanel.Controls.Add(lblDesc);
+        y += 66;
+
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Step 1: Crop Glyphs =====
+        AddSectionHeader(contentPanel, "Step 1: Crop Glyphs from JSON", leftMargin, ref y);
+
+        // Image Directory
+        var lblImgDir = new Label
+        {
+            Text = "Image Directory (OK samples):",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblImgDir);
+        y += 22;
+
+        var txtImgDir = new TextBox
+        {
+            PlaceholderText = @"e.g. E:\AIInspect\projects\label_check\datasets\ok",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 90, 25),
+            Name = "txtLabelImgDir"
+        };
+        contentPanel.Controls.Add(txtImgDir);
+
+        var btnBrowseImgDir = new Button
+        {
+            Text = "Browse",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 82, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseImgDir.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select image directory (OK samples)" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtImgDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseImgDir);
+        y += 32;
+
+        // JSON Directory
+        var lblJsonDir = new Label
+        {
+            Text = "JSON Annotation Directory:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblJsonDir);
+        y += 22;
+
+        var txtJsonDir = new TextBox
+        {
+            PlaceholderText = @"e.g. D:\glyph_bank\json",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 90, 25),
+            Name = "txtLabelJsonDir"
+        };
+        contentPanel.Controls.Add(txtJsonDir);
+
+        var btnBrowseJsonDir = new Button
+        {
+            Text = "Browse",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 82, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseJsonDir.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select JSON annotation directory" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtJsonDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseJsonDir);
+        y += 32;
+
+        // Output (Glyph Bank) Directory
+        var lblBankDir = new Label
+        {
+            Text = "Output Glyph Bank Directory:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblBankDir);
+        y += 22;
+
+        var txtBankDir = new TextBox
+        {
+            PlaceholderText = @"e.g. D:\glyph_bank\crops",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 90, 25),
+            Name = "txtLabelBankDir"
+        };
+        contentPanel.Controls.Add(txtBankDir);
+
+        var btnBrowseBankDir = new Button
+        {
+            Text = "Browse",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 82, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseBankDir.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select glyph bank output directory" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtBankDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseBankDir);
+        y += 32;
+
+        // Pad setting
+        var lblPad = new Label
+        {
+            Text = "Padding (px):",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(90, 20)
+        };
+        contentPanel.Controls.Add(lblPad);
+
+        var nudPad = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 20,
+            Value = 2,
+            Location = new Point(leftMargin + 95, y - 2),
+            Size = new Size(60, 25)
+        };
+        contentPanel.Controls.Add(nudPad);
+
+        // Crop button
+        var btnCrop = new Button
+        {
+            Text = "Crop Glyphs",
+            Size = new Size(130, 32),
+            Location = new Point(leftMargin + 200, y - 4),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(0, 123, 255),
+            ForeColor = Color.White
+        };
+        contentPanel.Controls.Add(btnCrop);
+        y += 36;
+
+        // Crop result label
+        var lblCropResult = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 22),
+            Name = "lblCropResult"
+        };
+        contentPanel.Controls.Add(lblCropResult);
+        y += 26;
+
+        // Class summary (DataGridView for glyph bank classes)
+        var dgvClasses = new DataGridView
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 150),
+            ReadOnly = true,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            Font = new Font("Segoe UI", 9),
+            Name = "dgvLabelClasses"
+        };
+        dgvClasses.Columns.Add("ClassName", "Character Class");
+        dgvClasses.Columns.Add("Count", "Image Count");
+        dgvClasses.Columns["Count"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+        contentPanel.Controls.Add(dgvClasses);
+        y += 158;
+
+        // Crop button handler
+        btnCrop.Click += async (s, e) =>
+        {
+            var imgDir = txtImgDir.Text.Trim();
+            var jsonDir = txtJsonDir.Text.Trim();
+            var bankDir = txtBankDir.Text.Trim();
+
+            if (string.IsNullOrEmpty(imgDir) || string.IsNullOrEmpty(jsonDir) || string.IsNullOrEmpty(bankDir))
+            {
+                MessageBox.Show("Please fill in all three directories.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnCrop.Enabled = false;
+            btnCrop.Text = "Cropping...";
+            lblCropResult.Text = "Processing...";
+            dgvClasses.Rows.Clear();
+
+            var resp = await _apiClient.LabelCropGlyphsAsync(imgDir, jsonDir, bankDir, (int)nudPad.Value);
+            if (resp != null && resp.Ok)
+            {
+                lblCropResult.Text = $"Cropped {resp.TotalCrops} glyphs from {resp.ProcessedFiles}/{resp.TotalJsonFiles} JSON files. " +
+                                     $"Classes: {resp.Classes.Count}";
+                lblCropResult.ForeColor = Color.Green;
+                foreach (var cls in resp.Classes)
+                    dgvClasses.Rows.Add(cls.ClassName, cls.Count);
+
+                if (resp.Errors.Count > 0)
+                {
+                    lblCropResult.Text += $"  ({resp.Errors.Count} errors)";
+                    lblCropResult.ForeColor = Color.OrangeRed;
+                }
+            }
+            else
+            {
+                lblCropResult.Text = "Crop failed. Check service connection and paths.";
+                lblCropResult.ForeColor = Color.Red;
+            }
+
+            btnCrop.Enabled = true;
+            btnCrop.Text = "Crop Glyphs";
+        };
+
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Step 2: Scan/Review Bank =====
+        AddSectionHeader(contentPanel, "Step 2: Review Glyph Bank", leftMargin, ref y);
+
+        var flowScan = new FlowLayoutPanel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 34),
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
+        };
+
+        var btnScanBank = new Button
+        {
+            Text = "Scan Bank",
+            Size = new Size(110, 30),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(108, 117, 125),
+            ForeColor = Color.White,
+            Margin = new Padding(0, 0, 8, 0)
+        };
+        flowScan.Controls.Add(btnScanBank);
+
+        var lblScanResult = new Label
+        {
+            Text = "(Uses the 'Output Glyph Bank Directory' from Step 1)",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Size = new Size(contentWidth - 130, 26),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(4, 4, 0, 0),
+            Name = "lblScanResult"
+        };
+        flowScan.Controls.Add(lblScanResult);
+
+        contentPanel.Controls.Add(flowScan);
+        y += 38;
+
+        btnScanBank.Click += async (s, e) =>
+        {
+            var bankDir = txtBankDir.Text.Trim();
+            if (string.IsNullOrEmpty(bankDir))
+            {
+                MessageBox.Show("Please set the glyph bank directory in Step 1.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnScanBank.Enabled = false;
+            btnScanBank.Text = "Scanning...";
+            dgvClasses.Rows.Clear();
+
+            var resp = await _apiClient.LabelScanBankAsync(bankDir);
+            if (resp != null && resp.Ok)
+            {
+                lblScanResult.Text = $"Found {resp.TotalClasses} classes, {resp.TotalImages} total images";
+                lblScanResult.ForeColor = Color.Green;
+                foreach (var cls in resp.Classes)
+                    dgvClasses.Rows.Add(cls.ClassName, cls.Count);
+            }
+            else
+            {
+                lblScanResult.Text = "Scan failed. Check path.";
+                lblScanResult.ForeColor = Color.Red;
+            }
+
+            btnScanBank.Enabled = true;
+            btnScanBank.Text = "Scan Bank";
+        };
+
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Step 3: Train PatchCore Models =====
+        AddSectionHeader(contentPanel, "Step 3: Train PatchCore Models", leftMargin, ref y);
+
+        // Model output directory
+        var lblModelOutDir = new Label
+        {
+            Text = "Model Output Directory:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblModelOutDir);
+        y += 22;
+
+        var txtModelOutDir = new TextBox
+        {
+            PlaceholderText = @"e.g. E:\AIInspect\projects\label_check\models\20260301_120000",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 90, 25),
+            Name = "txtLabelModelOutDir"
+        };
+        contentPanel.Controls.Add(txtModelOutDir);
+
+        var btnBrowseModelDir = new Button
+        {
+            Text = "Browse",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 82, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseModelDir.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select model output directory" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtModelOutDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseModelDir);
+        y += 32;
+
+        // Target project (optional, for auto-activate)
+        var lblTargetProject = new Label
+        {
+            Text = "Target Project ID (for auto-activate, optional):",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(320, 20)
+        };
+        contentPanel.Controls.Add(lblTargetProject);
+        y += 22;
+
+        var txtTargetProject = new TextBox
+        {
+            PlaceholderText = "e.g. label_check",
+            Location = new Point(leftMargin, y),
+            Size = new Size(250, 25),
+            Name = "txtLabelTargetProject"
+        };
+        contentPanel.Controls.Add(txtTargetProject);
+
+        var chkAutoActivate = new CheckBox
+        {
+            Text = "Auto-activate after training",
+            Checked = true,
+            Location = new Point(leftMargin + 270, y + 2),
+            Size = new Size(220, 22),
+            Font = new Font("Segoe UI", 9.5f)
+        };
+        contentPanel.Controls.Add(chkAutoActivate);
+        y += 32;
+
+        // Training parameters row
+        var lblParams = new Label
+        {
+            Text = "Training Parameters:",
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblParams);
+        y += 24;
+
+        // img_size
+        var lblImgSize = new Label { Text = "img_size:", Location = new Point(leftMargin, y), Size = new Size(60, 20), Font = new Font("Segoe UI", 9) };
+        var nudImgSize = new NumericUpDown { Minimum = 32, Maximum = 512, Value = 128, Location = new Point(leftMargin + 65, y - 2), Size = new Size(60, 25) };
+        contentPanel.Controls.Add(lblImgSize);
+        contentPanel.Controls.Add(nudImgSize);
+
+        // max_patches
+        var lblMaxPatch = new Label { Text = "max_patches:", Location = new Point(leftMargin + 140, y), Size = new Size(85, 20), Font = new Font("Segoe UI", 9) };
+        var nudMaxPatch = new NumericUpDown { Minimum = 1000, Maximum = 100000, Value = 30000, Increment = 1000, Location = new Point(leftMargin + 230, y - 2), Size = new Size(80, 25) };
+        contentPanel.Controls.Add(lblMaxPatch);
+        contentPanel.Controls.Add(nudMaxPatch);
+
+        // k
+        var lblK = new Label { Text = "k:", Location = new Point(leftMargin + 330, y), Size = new Size(20, 20), Font = new Font("Segoe UI", 9) };
+        var nudK = new NumericUpDown { Minimum = 1, Maximum = 20, Value = 1, Location = new Point(leftMargin + 350, y - 2), Size = new Size(50, 25) };
+        contentPanel.Controls.Add(lblK);
+        contentPanel.Controls.Add(nudK);
+
+        // topk
+        var lblTopK = new Label { Text = "topk:", Location = new Point(leftMargin + 415, y), Size = new Size(35, 20), Font = new Font("Segoe UI", 9) };
+        var nudTopK = new NumericUpDown { Minimum = 1, Maximum = 100, Value = 10, Location = new Point(leftMargin + 455, y - 2), Size = new Size(55, 25) };
+        contentPanel.Controls.Add(lblTopK);
+        contentPanel.Controls.Add(nudTopK);
+
+        // p_thr
+        var lblPThr = new Label { Text = "p_thr:", Location = new Point(leftMargin + 525, y), Size = new Size(40, 20), Font = new Font("Segoe UI", 9) };
+        var txtPThr = new TextBox { Text = "0.995", Location = new Point(leftMargin + 570, y - 2), Size = new Size(60, 25) };
+        contentPanel.Controls.Add(lblPThr);
+        contentPanel.Controls.Add(txtPThr);
+        y += 32;
+
+        // Start Training button
+        var btnStartTrain = new Button
+        {
+            Text = "Start Training",
+            Size = new Size(140, 36),
+            Location = new Point(leftMargin, y),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(40, 167, 69),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+        };
+        contentPanel.Controls.Add(btnStartTrain);
+
+        var lblTrainStatus = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin + 150, y + 8),
+            Size = new Size(contentWidth - 160, 22),
+            Name = "lblLabelTrainStatus"
+        };
+        contentPanel.Controls.Add(lblTrainStatus);
+        y += 42;
+
+        // Progress bar
+        var progressBar = new ProgressBar
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 20),
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            Name = "prgLabelTrain"
+        };
+        contentPanel.Controls.Add(progressBar);
+        y += 28;
+
+        // Training log
+        var txtTrainLog = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 200),
+            Font = new Font("Consolas", 8.5f),
+            BackColor = Color.FromArgb(30, 30, 30),
+            ForeColor = Color.FromArgb(220, 220, 220),
+            Name = "txtLabelTrainLog"
+        };
+        contentPanel.Controls.Add(txtTrainLog);
+        y += 208;
+
+        // Start Training handler
+        btnStartTrain.Click += async (s, e) =>
+        {
+            var bankDir = txtBankDir.Text.Trim();
+            var modelOutDir = txtModelOutDir.Text.Trim();
+
+            if (string.IsNullOrEmpty(bankDir))
+            {
+                MessageBox.Show("Please set the glyph bank directory in Step 1.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (string.IsNullOrEmpty(modelOutDir))
+            {
+                MessageBox.Show("Please set the model output directory.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!double.TryParse(txtPThr.Text, out double pThr))
+                pThr = 0.995;
+
+            btnStartTrain.Enabled = false;
+            btnStartTrain.Text = "Training...";
+            lblTrainStatus.Text = "Starting training...";
+            lblTrainStatus.ForeColor = Color.Black;
+            progressBar.Value = 0;
+            txtTrainLog.Clear();
+
+            var resp = await _apiClient.LabelStartTrainingAsync(
+                bankDir: bankDir,
+                outputModelDir: modelOutDir,
+                projectId: txtTargetProject.Text.Trim(),
+                autoActivate: chkAutoActivate.Checked,
+                imgSize: (int)nudImgSize.Value,
+                maxPatchesPerClass: (int)nudMaxPatch.Value,
+                k: (int)nudK.Value,
+                scoreMode: "topk",
+                topk: (int)nudTopK.Value,
+                pThr: pThr
+            );
+
+            if (resp != null && resp.Ok)
+            {
+                var jobId = resp.JobId;
+
+                // Poll until done
+                while (true)
+                {
+                    await Task.Delay(2000);
+                    var status = await _apiClient.LabelGetTrainStatusAsync(jobId);
+                    if (status == null) break;
+
+                    lblTrainStatus.Text = $"[{status.Progress:F0}%] {status.Message}";
+                    progressBar.Value = Math.Min(100, (int)status.Progress);
+                    txtTrainLog.Text = string.Join(Environment.NewLine, status.LogLines);
+                    txtTrainLog.SelectionStart = txtTrainLog.Text.Length;
+                    txtTrainLog.ScrollToCaret();
+
+                    if (status.Status == "completed")
+                    {
+                        lblTrainStatus.Text = $"Training completed: {status.Message}";
+                        lblTrainStatus.ForeColor = Color.Green;
+                        progressBar.Value = 100;
+                        break;
+                    }
+                    else if (status.Status == "failed")
+                    {
+                        lblTrainStatus.Text = $"Training FAILED: {status.Error ?? status.Message}";
+                        lblTrainStatus.ForeColor = Color.Red;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                lblTrainStatus.Text = "Failed to start training. Check service connection and paths.";
+                lblTrainStatus.ForeColor = Color.Red;
+            }
+
+            btnStartTrain.Enabled = true;
+            btnStartTrain.Text = "Start Training";
+        };
+
+        _tabControl.TabPages.Insert(0, tab);
+        _tabControl.SelectedTab = tab;
     }
 
     private static void AddSectionHeader(Panel parent, string text, int x, ref int y)

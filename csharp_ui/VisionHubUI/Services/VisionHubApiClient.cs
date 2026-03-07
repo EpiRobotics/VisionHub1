@@ -277,6 +277,106 @@ public class VisionHubApiClient : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // Label Training Workflow
+    // ------------------------------------------------------------------
+
+    public async Task<LabelCropResponse?> LabelCropGlyphsAsync(
+        string imageDir, string jsonDir, string outputDir, int pad = 2)
+    {
+        try
+        {
+            var payload = new
+            {
+                image_dir = imageDir,
+                json_dir = jsonDir,
+                output_dir = outputDir,
+                pad
+            };
+            var content = new StringContent(
+                JsonConvert.SerializeObject(payload),
+                Encoding.UTF8,
+                "application/json");
+            var response = await _httpClient.PostAsync($"{_baseUrl}/label/crop", content);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<LabelCropResponse>(json);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<LabelScanBankResponse?> LabelScanBankAsync(string bankDir)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync(
+                $"{_baseUrl}/label/scan_bank?bank_dir={Uri.EscapeDataString(bankDir)}", null);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<LabelScanBankResponse>(json);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<LabelTrainStartResponse?> LabelStartTrainingAsync(
+        string bankDir, string outputModelDir, string projectId = "",
+        bool autoActivate = true, int imgSize = 128,
+        int maxPatchesPerClass = 30000, int k = 1,
+        string scoreMode = "topk", int topk = 10, double pThr = 0.995)
+    {
+        try
+        {
+            var payload = new
+            {
+                bank_dir = bankDir,
+                output_model_dir = outputModelDir,
+                project_id = projectId,
+                auto_activate = autoActivate,
+                img_size = imgSize,
+                max_patches_per_class = maxPatchesPerClass,
+                k,
+                score_mode = scoreMode,
+                topk,
+                p_thr = pThr
+            };
+            var content = new StringContent(
+                JsonConvert.SerializeObject(payload),
+                Encoding.UTF8,
+                "application/json");
+            // Training can be long, use extended timeout
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            var response = await _httpClient.PostAsync($"{_baseUrl}/label/train", content, cts.Token);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<LabelTrainStartResponse>(json);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<LabelTrainStatus?> LabelGetTrainStatusAsync(string jobId)
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync($"{_baseUrl}/label/train/{jobId}");
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<LabelTrainStatus>(json);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // TCP Port test (direct TCP ping)
     // ------------------------------------------------------------------
 

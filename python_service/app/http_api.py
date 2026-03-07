@@ -7,6 +7,7 @@ run test inference, and monitor status.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,28 @@ class InferRequest(BaseModel):
 
 class SetModelRequest(BaseModel):
     version: str
+
+
+class LabelCropRequest(BaseModel):
+    """Request to crop glyphs from JSON annotations (Step 1 of label training)."""
+    image_dir: str
+    json_dir: str
+    output_dir: str
+    pad: int = 2
+
+
+class LabelTrainRequest(BaseModel):
+    """Request to train glyph PatchCore models (Step 2 of label training)."""
+    bank_dir: str
+    output_model_dir: str
+    project_id: str = ""
+    auto_activate: bool = True
+    img_size: int = 128
+    max_patches_per_class: int = 30000
+    k: int = 1
+    score_mode: str = "topk"
+    topk: int = 10
+    p_thr: float = 0.995
 
 
 class ProjectSummary(BaseModel):
@@ -279,5 +302,199 @@ def create_api(app_state: Any) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
         state.log_buffer.clear()
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Label Training Workflow
+    # ------------------------------------------------------------------
+
+    # In-memory state for label training jobs
+    _label_train_jobs: dict[str, dict[str, Any]] = {}
+
+    @api.post("/label/crop")
+    async def label_crop_glyphs(req: LabelCropRequest) -> dict[str, Any]:
+        """Step 1: Crop glyphs from JSON annotations into glyph_bank structure.
+
+        Reads images from image_dir, JSON annotations from json_dir,
+        and saves per-character crops to output_dir/<ch>/*.jpg.
+        """
+        from app.plugins.glyph_patchcore_core import crop_glyphs_from_json
+
+        img_dir = Path(req.image_dir)
+        json_dir = Path(req.json_dir)
+        out_dir = Path(req.output_dir)
+
+        if not img_dir.exists():
+            raise HTTPException(status_code=400, detail=f"Image directory not found: {req.image_dir}")
+        if not json_dir.exists():
+            raise HTTPException(status_code=400, detail=f"JSON directory not found: {req.json_dir}")
+
+        json_files = sorted(json_dir.glob("*.json"))
+        if not json_files:
+            raise HTTPException(status_code=400, detail=f"No JSON files found in: {req.json_dir}")
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        total_crops = 0
+        processed_files = 0
+        errors: list[str] = []
+
+        for jf in json_files:
+            try:
+                n = crop_glyphs_from_json(
+                    json_path=jf,
+                    img_dir=img_dir,
+                    out_dir=out_dir,
+                    pad=req.pad,
+                )
+                total_crops += n
+                processed_files += 1
+            except Exception as e:
+                errors.append(f"{jf.name}: {e}")
+
+        # Scan output directory for class summary
+        class_summary: list[dict[str, Any]] = []
+        if out_dir.exists():
+            for cls_dir in sorted(out_dir.iterdir()):
+                if cls_dir.is_dir():
+                    img_count = len([f for f in cls_dir.iterdir()
+                                     if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}])
+                    class_summary.append({"class": cls_dir.name, "count": img_count})
+
+        return {
+            "ok": True,
+            "total_crops": total_crops,
+            "processed_files": processed_files,
+            "total_json_files": len(json_files),
+            "classes": class_summary,
+            "errors": errors[:20],  # Limit error list
+        }
+
+    @api.post("/label/scan_bank")
+    async def label_scan_bank(bank_dir: str = "") -> dict[str, Any]:
+        """Scan a glyph_bank directory and return class statistics."""
+        bp = Path(bank_dir)
+        if not bp.exists():
+            raise HTTPException(status_code=400, detail=f"Bank directory not found: {bank_dir}")
+
+        classes: list[dict[str, Any]] = []
+        total_images = 0
+        for cls_dir in sorted(bp.iterdir()):
+            if cls_dir.is_dir():
+                img_count = len([f for f in cls_dir.iterdir()
+                                 if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}])
+                classes.append({"class": cls_dir.name, "count": img_count})
+                total_images += img_count
+
+        return {
+            "ok": True,
+            "bank_dir": bank_dir,
+            "total_classes": len(classes),
+            "total_images": total_images,
+            "classes": classes,
+        }
+
+    @api.post("/label/train")
+    async def label_start_training(req: LabelTrainRequest) -> dict[str, Any]:
+        """Step 2: Train glyph PatchCore models from glyph_bank.
+
+        Starts training in a background thread and returns a job_id
+        for polling progress via GET /label/train/{job_id}.
+        """
+        bp = Path(req.bank_dir)
+        if not bp.exists():
+            raise HTTPException(status_code=400, detail=f"Bank directory not found: {req.bank_dir}")
+
+        out_path = Path(req.output_model_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        job_id = f"label_train_{int(time.time())}"
+
+        job_state: dict[str, Any] = {
+            "job_id": job_id,
+            "status": "running",
+            "progress": 0.0,
+            "message": "Starting...",
+            "log_lines": [],
+            "result": None,
+            "error": None,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "completed_at": "",
+        }
+        _label_train_jobs[job_id] = job_state
+
+        def _run() -> None:
+            from app.plugins.glyph_patchcore_core import train_glyph_patchcore
+
+            try:
+                def progress_cb(pct: float, msg: str) -> None:
+                    job_state["progress"] = pct
+                    job_state["message"] = msg
+                    ts = time.strftime("%H:%M:%S")
+                    job_state["log_lines"].append(f"[{ts}] [{pct:.1f}%] {msg}")
+
+                result = train_glyph_patchcore(
+                    bank_dir=req.bank_dir,
+                    out_model_dir=req.output_model_dir,
+                    img_size=req.img_size,
+                    max_patches_per_class=req.max_patches_per_class,
+                    k=req.k,
+                    score_mode=req.score_mode,
+                    topk=req.topk,
+                    p_thr=req.p_thr,
+                    progress_cb=progress_cb,
+                )
+
+                job_state["status"] = "completed"
+                job_state["progress"] = 100.0
+                job_state["message"] = f"Training complete: {result.get('trained_classes', 0)} classes"
+                job_state["result"] = result
+                job_state["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+                # Auto-activate model for the specified project
+                if req.auto_activate and req.project_id:
+                    state = app_state.project_manager.get_project(req.project_id)
+                    if state:
+                        import json as json_mod
+                        active_path = Path(state.project_dir) / "active_model.json"
+                        version = out_path.name
+                        with open(active_path, "w", encoding="utf-8") as f:
+                            json_mod.dump(
+                                {"version": version, "model_dir": str(out_path),
+                                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                                f, indent=2,
+                            )
+                        ts = time.strftime("%H:%M:%S")
+                        job_state["log_lines"].append(
+                            f"[{ts}] Auto-activated model '{version}' for project '{req.project_id}'")
+
+            except Exception as e:
+                job_state["status"] = "failed"
+                job_state["error"] = str(e)
+                job_state["message"] = f"Training failed: {e}"
+                job_state["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                logger.exception("Label training job %s failed", job_id)
+
+        thread = threading.Thread(target=_run, daemon=True, name=f"label-train-{job_id}")
+        thread.start()
+
+        return {"ok": True, "job_id": job_id}
+
+    @api.get("/label/train/{job_id}")
+    async def label_get_train_status(job_id: str) -> dict[str, Any]:
+        """Poll label training job progress."""
+        job = _label_train_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Label training job not found: {job_id}")
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "progress": job["progress"],
+            "message": job["message"],
+            "log_lines": job["log_lines"][-100:],
+            "result": job["result"],
+            "error": job["error"],
+            "started_at": job["started_at"],
+            "completed_at": job["completed_at"],
+        }
 
     return api
