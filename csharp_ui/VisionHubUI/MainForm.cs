@@ -751,6 +751,187 @@ public partial class MainForm : Form
         // ===== Separator =====
         AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
 
+        // ===== Section: Overlay Output Path =====
+        AddSectionHeader(contentPanel, "Overlay Output Path", leftMargin, ref y);
+
+        var lblOverlayDesc = new Label
+        {
+            Text = "Set a fixed overlay output directory. Overlay is saved as output.jpg (overwrites each inference).\n" +
+                   "External vision software can monitor this file for OK/NG results. Leave empty for per-job artifacts.",
+            Font = new Font("Segoe UI", 9f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 32)
+        };
+        contentPanel.Controls.Add(lblOverlayDesc);
+        y += 36;
+
+        var txtOverlayDir = new TextBox
+        {
+            PlaceholderText = "e.g. D:\\results (overlay saved as output.jpg)",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 240, 25),
+            Name = "txtOverlayDir"
+        };
+        contentPanel.Controls.Add(txtOverlayDir);
+
+        var btnBrowseOverlay = new Button
+        {
+            Text = "Browse...",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 230, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseOverlay.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select overlay output directory" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtOverlayDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseOverlay);
+
+        var btnApplyOverlay = new Button
+        {
+            Text = "Apply",
+            Size = new Size(70, 26),
+            Location = new Point(leftMargin + contentWidth - 140, y - 1),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(0, 123, 255),
+            ForeColor = Color.White
+        };
+        contentPanel.Controls.Add(btnApplyOverlay);
+
+        var lblOverlayResult = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 9f),
+            Location = new Point(leftMargin, y + 28),
+            Size = new Size(contentWidth, 20),
+            Name = "lblOverlayResult"
+        };
+        contentPanel.Controls.Add(lblOverlayResult);
+
+        btnApplyOverlay.Click += async (s, e) =>
+        {
+            var overlayDir = txtOverlayDir.Text.Trim();
+            var overlayFullPath = string.IsNullOrEmpty(overlayDir)
+                ? ""
+                : Path.Combine(overlayDir, "output.jpg");
+
+            btnApplyOverlay.Enabled = false;
+            var ok = await _apiClient.SetOverlayPathAsync(project.ProjectId, overlayFullPath);
+            if (ok)
+            {
+                lblOverlayResult.Text = string.IsNullOrEmpty(overlayFullPath)
+                    ? "Cleared. Using per-job artifacts mode. (saved to config)"
+                    : $"Set: {overlayFullPath} (saved to config, persists after restart)";
+                lblOverlayResult.ForeColor = Color.Green;
+            }
+            else
+            {
+                lblOverlayResult.Text = "Failed. Check service connection.";
+                lblOverlayResult.ForeColor = Color.Red;
+            }
+            btnApplyOverlay.Enabled = true;
+        };
+        y += 54;
+
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Section: NG Threshold =====
+        AddSectionHeader(contentPanel, "NG Threshold", leftMargin, ref y);
+
+        var lblThrDesc2 = new Label
+        {
+            Text = "Set global NG threshold. Score >= threshold is NG. Leave empty or 0 for per-class trained thresholds.",
+            Font = new Font("Segoe UI", 9f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 18)
+        };
+        contentPanel.Controls.Add(lblThrDesc2);
+        y += 22;
+
+        var lblThrInput2 = new Label
+        {
+            Text = "Threshold:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y + 2),
+            Size = new Size(80, 20)
+        };
+        contentPanel.Controls.Add(lblThrInput2);
+
+        var txtThrGlobal2 = new TextBox
+        {
+            PlaceholderText = "e.g. 2.50",
+            Location = new Point(leftMargin + 85, y),
+            Size = new Size(120, 25),
+            Name = "txtThrGlobal"
+        };
+        contentPanel.Controls.Add(txtThrGlobal2);
+
+        var btnApplyThr2 = new Button
+        {
+            Text = "Apply",
+            Size = new Size(70, 26),
+            Location = new Point(leftMargin + 215, y - 1),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(0, 123, 255),
+            ForeColor = Color.White
+        };
+        contentPanel.Controls.Add(btnApplyThr2);
+
+        var lblThrResult2 = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 9f),
+            Location = new Point(leftMargin + 295, y + 2),
+            Size = new Size(contentWidth - 295, 20),
+            Name = "lblThrResult"
+        };
+        contentPanel.Controls.Add(lblThrResult2);
+
+        btnApplyThr2.Click += async (s, e) =>
+        {
+            double? thrValue = null;
+            var thrText = txtThrGlobal2.Text.Trim();
+            if (!string.IsNullOrEmpty(thrText))
+            {
+                if (double.TryParse(thrText, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double parsed) && parsed > 0)
+                {
+                    thrValue = parsed;
+                }
+                else
+                {
+                    MessageBox.Show("Invalid threshold. Use a positive number (e.g. 2.50).",
+                        "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
+            btnApplyThr2.Enabled = false;
+            var ok = await _apiClient.SetThresholdAsync(project.ProjectId, thrValue);
+            if (ok)
+            {
+                lblThrResult2.Text = thrValue.HasValue
+                    ? $"Set to {thrValue.Value:F2} (saved to config)"
+                    : "Using per-class thresholds (saved to config)";
+                lblThrResult2.ForeColor = Color.Green;
+            }
+            else
+            {
+                lblThrResult2.Text = "Failed. Check service connection.";
+                lblThrResult2.ForeColor = Color.Red;
+            }
+            btnApplyThr2.Enabled = true;
+        };
+        y += 32;
+
+        // ===== Separator =====
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
         // ===== Section: Log =====
         AddSectionHeader(contentPanel, "Log", leftMargin, ref y);
 
@@ -1375,243 +1556,6 @@ public partial class MainForm : Form
         };
         contentPanel.Controls.Add(txtTrainLog);
         y += 208;
-
-        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
-
-        // ===== Step 4: Overlay Output Settings (for inference) =====
-        AddSectionHeader(contentPanel, "Step 4: Overlay Output Settings (Runtime)", leftMargin, ref y);
-
-        var lblOverlayDesc = new Label
-        {
-            Text = "Set a fixed overlay output path for a target project. Every inference will write\n" +
-                   "overlay to this file as 'output.jpg' (overwriting each time). Another vision\n" +
-                   "software can monitor this file to check OK/NG by red bounding boxes.",
-            Font = new Font("Segoe UI", 9.5f),
-            ForeColor = Color.DimGray,
-            Location = new Point(leftMargin, y),
-            Size = new Size(contentWidth, 48)
-        };
-        contentPanel.Controls.Add(lblOverlayDesc);
-        y += 52;
-
-        // Overlay output directory
-        var lblOverlayDir = new Label
-        {
-            Text = "Overlay Output Directory:",
-            Font = new Font("Segoe UI", 9.5f),
-            Location = new Point(leftMargin, y),
-            Size = new Size(200, 20)
-        };
-        contentPanel.Controls.Add(lblOverlayDir);
-        y += 22;
-
-        var txtOverlayDir = new TextBox
-        {
-            PlaceholderText = @"e.g. D:\results",
-            Location = new Point(leftMargin, y),
-            Size = new Size(contentWidth - 90, 25),
-            Name = "txtOverlayDir"
-        };
-        contentPanel.Controls.Add(txtOverlayDir);
-
-        var btnBrowseOverlayDir = new Button
-        {
-            Text = "Browse",
-            Size = new Size(80, 26),
-            Location = new Point(leftMargin + contentWidth - 82, y - 1),
-            FlatStyle = FlatStyle.Flat
-        };
-        btnBrowseOverlayDir.Click += (s, e) =>
-        {
-            using var fbd = new FolderBrowserDialog { Description = "Select overlay output directory" };
-            if (fbd.ShowDialog() == DialogResult.OK)
-                txtOverlayDir.Text = fbd.SelectedPath;
-        };
-        contentPanel.Controls.Add(btnBrowseOverlayDir);
-        y += 32;
-
-        // Apply overlay path button
-        var flowOverlay = new FlowLayoutPanel
-        {
-            Location = new Point(leftMargin, y),
-            Size = new Size(contentWidth, 36),
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false
-        };
-
-        var btnApplyOverlay = new Button
-        {
-            Text = "Apply to Project",
-            Size = new Size(130, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(0, 123, 255),
-            ForeColor = Color.White,
-            Margin = new Padding(0, 0, 8, 0)
-        };
-        flowOverlay.Controls.Add(btnApplyOverlay);
-
-        var lblOverlayResult = new Label
-        {
-            Text = "(File will be saved as 'output.jpg' in the specified directory)",
-            Font = new Font("Segoe UI", 9.5f),
-            ForeColor = Color.DimGray,
-            Size = new Size(contentWidth - 150, 26),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Margin = new Padding(4, 4, 0, 0)
-        };
-        flowOverlay.Controls.Add(lblOverlayResult);
-
-        contentPanel.Controls.Add(flowOverlay);
-        y += 40;
-
-        btnApplyOverlay.Click += async (s, e) =>
-        {
-            var projectId = txtTargetProject.Text.Trim();
-            if (string.IsNullOrEmpty(projectId))
-            {
-                MessageBox.Show("Please set the Target Project ID in Step 3.", "Warning",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            var overlayDir = txtOverlayDir.Text.Trim();
-            string overlayFullPath;
-            if (string.IsNullOrEmpty(overlayDir))
-            {
-                overlayFullPath = "";  // Clear: revert to per-job artifacts
-            }
-            else
-            {
-                overlayFullPath = Path.Combine(overlayDir, "output.jpg");
-            }
-
-            btnApplyOverlay.Enabled = false;
-            var ok = await _apiClient.SetOverlayPathAsync(projectId, overlayFullPath);
-            if (ok)
-            {
-                if (string.IsNullOrEmpty(overlayFullPath))
-                {
-                    lblOverlayResult.Text = "Overlay path cleared. Using per-job artifacts mode.";
-                }
-                else
-                {
-                    lblOverlayResult.Text = $"Set: {overlayFullPath} (overwrites each inference)";
-                }
-                lblOverlayResult.ForeColor = Color.Green;
-            }
-            else
-            {
-                lblOverlayResult.Text = "Failed to apply. Check service connection and project ID.";
-                lblOverlayResult.ForeColor = Color.Red;
-            }
-            btnApplyOverlay.Enabled = true;
-        };
-
-        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
-
-        // ===== Step 5: NG Threshold Setting (Runtime) =====
-        AddSectionHeader(contentPanel, "Step 5: NG Threshold (Runtime)", leftMargin, ref y);
-
-        var lblThrDesc = new Label
-        {
-            Text = "Set the global NG threshold for a project. A glyph with score >= threshold is judged NG.\n" +
-                   "Leave empty or set 0 to use per-class trained thresholds (from model).",
-            Font = new Font("Segoe UI", 9.5f),
-            ForeColor = Color.DimGray,
-            Location = new Point(leftMargin, y),
-            Size = new Size(contentWidth, 36)
-        };
-        contentPanel.Controls.Add(lblThrDesc);
-        y += 40;
-
-        var lblThrInput = new Label
-        {
-            Text = "Global NG Threshold:",
-            Font = new Font("Segoe UI", 9.5f),
-            Location = new Point(leftMargin, y),
-            Size = new Size(160, 20)
-        };
-        contentPanel.Controls.Add(lblThrInput);
-
-        var txtThrGlobal = new TextBox
-        {
-            PlaceholderText = "e.g. 2.50 (leave empty for per-class)",
-            Location = new Point(leftMargin + 165, y - 2),
-            Size = new Size(160, 25),
-            Name = "txtThrGlobal"
-        };
-        contentPanel.Controls.Add(txtThrGlobal);
-
-        var btnApplyThr = new Button
-        {
-            Text = "Apply Threshold",
-            Size = new Size(130, 26),
-            Location = new Point(leftMargin + 340, y - 2),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(0, 123, 255),
-            ForeColor = Color.White
-        };
-        contentPanel.Controls.Add(btnApplyThr);
-
-        var lblThrResult = new Label
-        {
-            Text = "",
-            Font = new Font("Segoe UI", 9.5f),
-            ForeColor = Color.DimGray,
-            Location = new Point(leftMargin + 480, y),
-            Size = new Size(contentWidth - 480, 20)
-        };
-        contentPanel.Controls.Add(lblThrResult);
-        y += 32;
-
-        btnApplyThr.Click += async (s, e) =>
-        {
-            var projectId = txtTargetProject.Text.Trim();
-            if (string.IsNullOrEmpty(projectId))
-            {
-                MessageBox.Show("Please set the Target Project ID in Step 3.", "Warning",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            double? thrValue = null;
-            var thrText = txtThrGlobal.Text.Trim();
-            if (!string.IsNullOrEmpty(thrText))
-            {
-                if (double.TryParse(thrText, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double parsed) && parsed > 0)
-                {
-                    thrValue = parsed;
-                }
-                else
-                {
-                    MessageBox.Show("Invalid threshold value. Use a positive number (e.g. 2.50).",
-                        "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-            }
-
-            btnApplyThr.Enabled = false;
-            var ok = await _apiClient.SetThresholdAsync(projectId, thrValue);
-            if (ok)
-            {
-                if (thrValue.HasValue)
-                {
-                    lblThrResult.Text = $"Threshold set to {thrValue.Value:F2} for {projectId}";
-                }
-                else
-                {
-                    lblThrResult.Text = $"Using per-class trained thresholds for {projectId}";
-                }
-                lblThrResult.ForeColor = Color.Green;
-            }
-            else
-            {
-                lblThrResult.Text = "Failed. Check service connection and project ID.";
-                lblThrResult.ForeColor = Color.Red;
-            }
-            btnApplyThr.Enabled = true;
-        };
 
         // Start Training handler
         btnStartTrain.Click += async (s, e) =>

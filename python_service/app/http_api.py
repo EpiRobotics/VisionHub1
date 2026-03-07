@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -82,6 +83,31 @@ class HealthResponse(BaseModel):
     projects_count: int = 0
     gpu_workers: int = 1
     timestamp: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Helper: persist project config to YAML
+# ---------------------------------------------------------------------------
+
+def _save_project_yaml(state: Any) -> None:
+    """Write the current ProjectConfig back to project.yaml so settings persist."""
+    yaml_path = Path(state.project_dir) / "project.yaml"
+    data = state.config.model_dump()
+    # Remove internal fields that start with '_' (like _train)
+    # but keep them if they exist in the original file
+    try:
+        if yaml_path.exists():
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                original = yaml.safe_load(f) or {}
+            # Preserve _train and other underscore keys from original
+            for key, val in original.items():
+                if key.startswith("_") and key not in data:
+                    data[key] = val
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        logger.info("Saved project config to %s", yaml_path)
+    except Exception:
+        logger.exception("Failed to save project config to %s", yaml_path)
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +341,13 @@ def create_api(app_state: Any) -> FastAPI:
         (overwriting each time). Another vision software can monitor
         this file to check OK/NG by red bounding boxes.
         Set to empty string to revert to per-job artifact mode.
+        Saves to project.yaml so it persists across restarts.
         """
         state = app_state.project_manager.get_project(project_id)
         if state is None:
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
         state.config.io.overlay_output_path = overlay_path
+        _save_project_yaml(state)
         return {
             "ok": True,
             "project_id": project_id,
@@ -333,8 +361,7 @@ def create_api(app_state: Any) -> FastAPI:
         For glyph_patchcore_v1: overrides per-class thresholds.
         A glyph with score >= thr_global is judged NG.
         Set to null (omit parameter) to revert to per-class trained thresholds.
-
-        For resnet_classify_v1: sets the NG probability threshold.
+        Saves to project.yaml so it persists across restarts.
         """
         state = app_state.project_manager.get_project(project_id)
         if state is None:
@@ -342,6 +369,7 @@ def create_api(app_state: Any) -> FastAPI:
 
         # Store in the pipeline postprocess.decision config so it persists for each inference
         state.config.pipeline.postprocess.decision.thr_global = thr_global
+        _save_project_yaml(state)
 
         return {
             "ok": True,
