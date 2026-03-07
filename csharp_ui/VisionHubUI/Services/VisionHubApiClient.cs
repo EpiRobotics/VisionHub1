@@ -277,6 +277,25 @@ public class VisionHubApiClient : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // Project Runtime Config
+    // ------------------------------------------------------------------
+
+    public async Task<bool> SetOverlayPathAsync(string projectId, string overlayPath)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync(
+                $"{_baseUrl}/projects/{projectId}/set_overlay_path?overlay_path={Uri.EscapeDataString(overlayPath)}",
+                null);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Label Training Workflow
     // ------------------------------------------------------------------
 

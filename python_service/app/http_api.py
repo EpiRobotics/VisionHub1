@@ -304,6 +304,29 @@ def create_api(app_state: Any) -> FastAPI:
         return {"ok": True}
 
     # ------------------------------------------------------------------
+    # Project Runtime Config
+    # ------------------------------------------------------------------
+
+    @api.post("/projects/{project_id}/set_overlay_path")
+    async def set_overlay_path(project_id: str, overlay_path: str = "") -> dict[str, Any]:
+        """Set the fixed overlay output path for a project at runtime.
+
+        When set, every inference will write overlay to this exact file
+        (overwriting each time). Another vision software can monitor
+        this file to check OK/NG by red bounding boxes.
+        Set to empty string to revert to per-job artifact mode.
+        """
+        state = app_state.project_manager.get_project(project_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        state.config.io.overlay_output_path = overlay_path
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "overlay_output_path": overlay_path,
+        }
+
+    # ------------------------------------------------------------------
     # Label Training Workflow
     # ------------------------------------------------------------------
 

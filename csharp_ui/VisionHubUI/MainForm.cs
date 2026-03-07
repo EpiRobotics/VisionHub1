@@ -1361,6 +1361,137 @@ public partial class MainForm : Form
         contentPanel.Controls.Add(txtTrainLog);
         y += 208;
 
+        AddSeparator(contentPanel, leftMargin, ref y, contentWidth);
+
+        // ===== Step 4: Overlay Output Settings (for inference) =====
+        AddSectionHeader(contentPanel, "Step 4: Overlay Output Settings (Runtime)", leftMargin, ref y);
+
+        var lblOverlayDesc = new Label
+        {
+            Text = "Set a fixed overlay output path for a target project. Every inference will write\n" +
+                   "overlay to this file as 'output.jpg' (overwriting each time). Another vision\n" +
+                   "software can monitor this file to check OK/NG by red bounding boxes.",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 48)
+        };
+        contentPanel.Controls.Add(lblOverlayDesc);
+        y += 52;
+
+        // Overlay output directory
+        var lblOverlayDir = new Label
+        {
+            Text = "Overlay Output Directory:",
+            Font = new Font("Segoe UI", 9.5f),
+            Location = new Point(leftMargin, y),
+            Size = new Size(200, 20)
+        };
+        contentPanel.Controls.Add(lblOverlayDir);
+        y += 22;
+
+        var txtOverlayDir = new TextBox
+        {
+            PlaceholderText = @"e.g. D:\results",
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth - 90, 25),
+            Name = "txtOverlayDir"
+        };
+        contentPanel.Controls.Add(txtOverlayDir);
+
+        var btnBrowseOverlayDir = new Button
+        {
+            Text = "Browse",
+            Size = new Size(80, 26),
+            Location = new Point(leftMargin + contentWidth - 82, y - 1),
+            FlatStyle = FlatStyle.Flat
+        };
+        btnBrowseOverlayDir.Click += (s, e) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Select overlay output directory" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+                txtOverlayDir.Text = fbd.SelectedPath;
+        };
+        contentPanel.Controls.Add(btnBrowseOverlayDir);
+        y += 32;
+
+        // Apply overlay path button
+        var flowOverlay = new FlowLayoutPanel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 36),
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
+        };
+
+        var btnApplyOverlay = new Button
+        {
+            Text = "Apply to Project",
+            Size = new Size(130, 30),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(0, 123, 255),
+            ForeColor = Color.White,
+            Margin = new Padding(0, 0, 8, 0)
+        };
+        flowOverlay.Controls.Add(btnApplyOverlay);
+
+        var lblOverlayResult = new Label
+        {
+            Text = "(File will be saved as 'output.jpg' in the specified directory)",
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = Color.DimGray,
+            Size = new Size(contentWidth - 150, 26),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(4, 4, 0, 0)
+        };
+        flowOverlay.Controls.Add(lblOverlayResult);
+
+        contentPanel.Controls.Add(flowOverlay);
+        y += 40;
+
+        btnApplyOverlay.Click += async (s, e) =>
+        {
+            var projectId = txtTargetProject.Text.Trim();
+            if (string.IsNullOrEmpty(projectId))
+            {
+                MessageBox.Show("Please set the Target Project ID in Step 3.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var overlayDir = txtOverlayDir.Text.Trim();
+            string overlayFullPath;
+            if (string.IsNullOrEmpty(overlayDir))
+            {
+                overlayFullPath = "";  // Clear: revert to per-job artifacts
+            }
+            else
+            {
+                overlayFullPath = Path.Combine(overlayDir, "output.jpg");
+            }
+
+            btnApplyOverlay.Enabled = false;
+            var ok = await _apiClient.SetOverlayPathAsync(projectId, overlayFullPath);
+            if (ok)
+            {
+                if (string.IsNullOrEmpty(overlayFullPath))
+                {
+                    lblOverlayResult.Text = "Overlay path cleared. Using per-job artifacts mode.";
+                }
+                else
+                {
+                    lblOverlayResult.Text = $"Set: {overlayFullPath} (overwrites each inference)";
+                }
+                lblOverlayResult.ForeColor = Color.Green;
+            }
+            else
+            {
+                lblOverlayResult.Text = "Failed to apply. Check service connection and project ID.";
+                lblOverlayResult.ForeColor = Color.Red;
+            }
+            btnApplyOverlay.Enabled = true;
+        };
+
         // Start Training handler
         btnStartTrain.Click += async (s, e) =>
         {

@@ -154,15 +154,24 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             )
 
         job_id = config.get("_job_id", "unknown")
-        output_dir = config.get("_output_dir", "")
 
         # Determine overlay output path
+        # Priority: io.overlay_output_path (fixed file, overwritten each time) > per-job artifacts
         overlay_path: str | None = None
-        if output_dir:
-            today = datetime.now().strftime("%Y-%m-%d")
-            artifacts_dir = Path(output_dir) / today / "artifacts"
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
-            overlay_path = str(artifacts_dir / f"{job_id}_overlay.png")
+        fixed_overlay = config.get("_overlay_output_path", "")
+        if fixed_overlay:
+            # Fixed overlay path: always write to the same file (e.g. D:\results\output.jpg)
+            # Another vision software monitors this file to check OK/NG by red bounding boxes
+            overlay_dir = Path(fixed_overlay).parent
+            overlay_dir.mkdir(parents=True, exist_ok=True)
+            overlay_path = fixed_overlay
+        else:
+            output_dir = config.get("_output_dir", "")
+            if output_dir:
+                today = datetime.now().strftime("%Y-%m-%d")
+                artifacts_dir = Path(output_dir) / today / "artifacts"
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+                overlay_path = str(artifacts_dir / f"{job_id}_overlay.png")
 
         # Global threshold override from options or config
         thr_global: float | None = None

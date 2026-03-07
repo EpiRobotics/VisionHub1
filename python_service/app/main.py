@@ -247,6 +247,7 @@ class ServiceApp:
         config_dict["_options"] = options
         config_dict["_output_dir"] = state.config.io.output_dir or str(Path(state.project_dir) / "runs")
         config_dict["_job_id"] = job.job_id
+        config_dict["_overlay_output_path"] = state.config.io.overlay_output_path or ""
 
         plugin_result = state.plugin.infer(image_path, config_dict)
 

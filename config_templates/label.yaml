@@ -30,6 +30,11 @@ io:
   bind_host: "0.0.0.0"
   allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
   output_dir: "${DATA_ROOT}/projects/label_check/runs"
+  overlay_output_path: ""     # Fixed overlay path, e.g. "D:\\results\\output.jpg"
+                              # If set, every inference writes overlay to this exact file
+                              # (overwriting each time). Another vision software can
+                              # monitor this file to check OK/NG by red bounding boxes.
+                              # If empty, overlay is saved per-job in output_dir/artifacts/.
 
 image:
   file_ready:
@@ -69,6 +74,7 @@ pipeline:
       save_overlay: true          # Save overlay with per-glyph OK/NG annotations
       save_details_csv: false     # Save per-glyph details CSV
       save_summary_csv: false     # Save per-image summary CSV
+      # overlay_output_path is configured in io section above
 
   # Glyph PatchCore training parameters
   _train:
