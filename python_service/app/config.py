@@ -106,13 +106,14 @@ class RegionsExportConfig(BaseModel):
 
 
 class ExportConfig(BaseModel):
-    save_heatmap_png: bool = True
+    save_heatmap_png: bool = False  # matplotlib heatmap (slow ~1-2s), off by default
     heatmap_vmin: float = 0.0
     heatmap_vmax_mode: str = "thr_scale"
     heatmap_vmax: float = 1.0
     heatmap_vmax_scale: float = 1.2
-    save_u16: bool = True
-    save_mask: bool = True
+    save_u16: bool = False  # 16-bit score map, off by default
+    save_mask: bool = False  # binary mask, off by default
+    save_overlay: bool = False  # per-job overlay (use overlay_output_path instead)
     mask_thr_scale: float = 0.85
     dilate_px: int = 10
     close_px: int = 6

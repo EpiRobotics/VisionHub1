@@ -35,7 +35,7 @@ from app.plugins.patchcore_core import (
     infer_one_image,
     list_images,
     save_heatmap_png,
-    save_overlay_png,
+    save_overlay_cv2,
     save_u16_and_mask,
     set_seed,
     train_memory_bank,
@@ -256,14 +256,31 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
         artifacts: dict[str, str] = {}
         regions: list[dict[str, Any]] = []
 
+        # Fixed overlay output path (overwrite each time, like glyph plugin)
+        overlay_output_path = config.get("_overlay_output_path", "")
+
+        if overlay_output_path:
+            # Save overlay to fixed path (fast, cv2-based)
+            try:
+                save_overlay_cv2(
+                    out_path=Path(overlay_output_path),
+                    img_path=Path(image_path),
+                    heatmap=heatmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                )
+                artifacts["overlay"] = overlay_output_path
+            except Exception:
+                logger.warning("Failed to save overlay to %s for job %s", overlay_output_path, job_id, exc_info=True)
+
         if output_dir:
             today = datetime.now().strftime("%Y-%m-%d")
             artifacts_dir = Path(output_dir) / today / "artifacts"
             artifacts_dir.mkdir(parents=True, exist_ok=True)
             base_name = str(job_id)
 
-            # U16 + Mask
-            if export_cfg.get("save_u16", True) or export_cfg.get("save_mask", True):
+            # U16 + Mask (default off for speed)
+            if export_cfg.get("save_u16", False) or export_cfg.get("save_mask", False):
                 u16_path, mask_path = save_u16_and_mask(
                     out_base=artifacts_dir / f"{base_name}_score",
                     heatmap=heatmap,
@@ -274,9 +291,9 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
                     dilate_px=dilate_px,
                     close_px=close_px,
                 )
-                if export_cfg.get("save_u16", True):
+                if export_cfg.get("save_u16", False):
                     artifacts["u16"] = u16_path
-                if export_cfg.get("save_mask", True):
+                if export_cfg.get("save_mask", False):
                     artifacts["mask"] = mask_path
 
                     # Extract connected-component regions from mask
@@ -290,8 +307,8 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
                             max_regions=int(regions_cfg.get("max_regions", 10)),
                         )
 
-            # Heatmap PNG
-            if export_cfg.get("save_heatmap_png", True):
+            # Heatmap PNG (default off — matplotlib is very slow ~1-2s)
+            if export_cfg.get("save_heatmap_png", False):
                 heatmap_file = str(artifacts_dir / f"{base_name}_heatmap.png")
                 save_heatmap_png(
                     out_png=Path(heatmap_file),
@@ -302,19 +319,20 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
                 )
                 artifacts["heatmap"] = heatmap_file
 
-            # Overlay PNG
-            try:
-                overlay_file = str(artifacts_dir / f"{base_name}_overlay.png")
-                save_overlay_png(
-                    out_png=Path(overlay_file),
-                    img_path=Path(image_path),
-                    heatmap=heatmap,
-                    vmin=vmin,
-                    vmax=vmax,
-                )
-                artifacts["overlay"] = overlay_file
-            except Exception:
-                logger.warning("Failed to save overlay for job %s", job_id, exc_info=True)
+            # Per-job overlay (only if no fixed overlay path, default off)
+            if not overlay_output_path and export_cfg.get("save_overlay", False):
+                try:
+                    overlay_file = str(artifacts_dir / f"{base_name}_overlay.jpg")
+                    save_overlay_cv2(
+                        out_path=Path(overlay_file),
+                        img_path=Path(image_path),
+                        heatmap=heatmap,
+                        vmin=vmin,
+                        vmax=vmax,
+                    )
+                    artifacts["overlay"] = overlay_file
+                except Exception:
+                    logger.warning("Failed to save overlay for job %s", job_id, exc_info=True)
 
         t_save_end = time.perf_counter()
         save_ms = (t_save_end - t_save_start) * 1000

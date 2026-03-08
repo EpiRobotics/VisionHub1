@@ -47,13 +47,17 @@ pipeline:
       score_method: "q999"      # heatmap quantile for image-level score
       threshold: "from_model"   # from_model / fixed
     export:
-      save_heatmap_png: true
+      # --- Speed note ---
+      # With all saves OFF + overlay_output_path set, save time is ~50-100ms
+      # With all saves ON, save time can be ~3000ms (matplotlib is slow)
+      save_heatmap_png: false       # matplotlib heatmap (slow ~1-2s), turn on only for debug
+      save_u16: false               # 16-bit score map, turn on only for debug
+      save_mask: false              # binary mask, turn on only for debug
+      save_overlay: false           # per-job overlay to artifacts dir (use overlay_output_path instead)
       heatmap_vmin: 0.0
       heatmap_vmax_mode: "thr_scale"   # thr_scale / fixed / auto
       heatmap_vmax: 1.0
       heatmap_vmax_scale: 1.2
-      save_u16: true
-      save_mask: true
       mask_thr_scale: 0.85
       dilate_px: 10
       close_px: 6
