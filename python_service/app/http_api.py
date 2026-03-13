@@ -278,6 +278,11 @@ def create_api(app_state: Any) -> FastAPI:
 
         job_id = req.job_id or f"http_{int(time.time()*1000)}"
 
+        # Persist last test image path so UI can pre-fill it on restart
+        if req.image_path and req.image_path != state.config.io.test_image_path:
+            state.config.io.test_image_path = req.image_path
+            _save_project_yaml(state)
+
         try:
             result = await app_state.run_inference(project_id, job_id, req.image_path, req.options)
             return result.to_dict()

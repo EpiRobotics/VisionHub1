@@ -657,9 +657,13 @@ public partial class MainForm : Form
         // ===== Section: Test Inference =====
         AddSectionHeader(contentPanel, "Test Inference", leftMargin, ref y);
 
+        // Pre-fill test image path from saved config
+        var savedTestImagePath = project.Config?["io"]?["test_image_path"]?.ToString() ?? "";
+
         var txtImagePath = new TextBox
         {
             PlaceholderText = "Enter image path or browse...",
+            Text = savedTestImagePath,
             Location = new Point(leftMargin, y),
             Size = new Size(contentWidth - 160, 25),
             Name = "txtImagePath"

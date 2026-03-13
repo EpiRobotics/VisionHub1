@@ -77,6 +77,7 @@ class IoConfig(BaseModel):
     allow_ips: list[str] = Field(default_factory=lambda: ["127.0.0.1/32"])
     output_dir: str = ""
     overlay_output_path: str = ""  # Fixed overlay path (e.g. "D:\\results\\output.jpg"), overwritten each infer
+    test_image_path: str = ""  # Last used test image path from UI (persisted for convenience)
 
 
 class TileConfig(BaseModel):
