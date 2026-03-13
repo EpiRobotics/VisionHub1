@@ -270,7 +270,7 @@ public partial class MainForm : Form
         UpdateProjectListDisplay();
     }
 
-    private void ProjectListBox_SelectedIndexChanged(object? sender, EventArgs e)
+    private async void ProjectListBox_SelectedIndexChanged(object? sender, EventArgs e)
     {
         if (_projectListBox.SelectedIndex < 0) return;
 
@@ -283,7 +283,7 @@ public partial class MainForm : Form
             // Only switch tab on manual clicks, not during timer-driven refresh
             if (!_suppressTabSwitch)
             {
-                ShowProjectTab(project);
+                await ShowProjectTab(project);
             }
         }
     }
@@ -360,8 +360,13 @@ public partial class MainForm : Form
     // Project Tab
     // ==================================================================
 
-    private void ShowProjectTab(ProjectInfo project)
+    private async Task ShowProjectTab(ProjectInfo project)
     {
+        // Fetch full project detail (includes config with saved settings)
+        var detail = await _apiClient.GetProjectAsync(project.ProjectId);
+        if (detail != null)
+            project = detail;
+
         // Check if tab already exists
         var tabName = $"tab_{project.ProjectId}";
         TabPage? existing = null;
@@ -428,7 +433,8 @@ public partial class MainForm : Form
             Font = new Font("Segoe UI", 10),
             Location = new Point(leftMargin, y),
             Size = new Size(contentWidth, 22),
-            ForeColor = Color.DimGray
+            ForeColor = Color.DimGray,
+            Name = "lblInfo"
         };
         contentPanel.Controls.Add(lblInfo);
         y += 28;
@@ -766,9 +772,20 @@ public partial class MainForm : Form
         contentPanel.Controls.Add(lblOverlayDesc);
         y += 36;
 
+        // Pre-fill overlay output path from saved config
+        var savedOverlayPath = project.Config?["io"]?["overlay_output_path"]?.ToString() ?? "";
+        var savedOverlayDir = "";
+        if (!string.IsNullOrEmpty(savedOverlayPath))
+        {
+            // Strip trailing filename (e.g. "output.jpg") to show just the directory
+            var dirPart = System.IO.Path.GetDirectoryName(savedOverlayPath);
+            savedOverlayDir = !string.IsNullOrEmpty(dirPart) ? dirPart : savedOverlayPath;
+        }
+
         var txtOverlayDir = new TextBox
         {
             PlaceholderText = "e.g. D:\\results (overlay saved as output.jpg)",
+            Text = savedOverlayDir,
             Location = new Point(leftMargin, y),
             Size = new Size(contentWidth - 240, 25),
             Name = "txtOverlayDir"
@@ -862,9 +879,18 @@ public partial class MainForm : Form
         };
         contentPanel.Controls.Add(lblThrInput2);
 
+        // Pre-fill threshold from saved config
+        var savedThrToken = project.Config?["pipeline"]?["postprocess"]?["decision"]?["thr_global"];
+        var savedThrText = "";
+        if (savedThrToken != null && savedThrToken.Type != Newtonsoft.Json.Linq.JTokenType.Null)
+        {
+            savedThrText = savedThrToken.ToString();
+        }
+
         var txtThrGlobal2 = new TextBox
         {
             PlaceholderText = "e.g. 2.50",
+            Text = savedThrText,
             Location = new Point(leftMargin + 85, y),
             Size = new Size(120, 25),
             Name = "txtThrGlobal"
@@ -1672,6 +1698,13 @@ public partial class MainForm : Form
 
     private void UpdateProjectTabContent(TabPage tab, ProjectInfo project)
     {
+        // Update info label (Port may have changed)
+        var lblInfo = tab.Controls.Find("lblInfo", true).FirstOrDefault() as Label;
+        if (lblInfo != null)
+        {
+            lblInfo.Text = $"Project ID: {project.ProjectId}   |   Port: {project.TcpPort}   |   Algorithm: {project.Algo}";
+        }
+
         // Update dynamic labels
         var lblModel = tab.Controls.Find("lblModel", true).FirstOrDefault() as Label;
         if (lblModel != null)
