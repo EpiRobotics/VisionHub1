@@ -451,11 +451,16 @@ def save_overlay_cv2(
     vmin: float = 0.0,
     vmax: float = 1.0,
     alpha: float = 0.4,
+    score: float | None = None,
+    threshold: float | None = None,
+    pred: str | None = None,
 ) -> None:
     """Save overlay using OpenCV (fast, no matplotlib dependency).
 
     Uses cv2.applyColorMap(COLORMAP_JET) instead of matplotlib.cm.jet.
     Typically 10-50x faster than the matplotlib version.
+
+    If score/threshold/pred are provided, draws OK/NG text and score on the image.
     """
     import cv2
 
@@ -476,6 +481,40 @@ def save_overlay_cv2(
 
     # Blend
     blended = (np_img.astype(np.float32) * (1 - alpha) + hm_color_rgb.astype(np.float32) * alpha).astype(np.uint8)
+
+    # Draw OK/NG text and score on the image
+    if pred is not None and score is not None and threshold is not None:
+        blended_bgr = cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+        img_h, img_w = blended_bgr.shape[:2]
+
+        # Scale font size based on image dimensions
+        scale_ref = min(img_w, img_h)
+        font_scale_label = max(0.8, scale_ref / 600.0)
+        font_scale_score = max(0.5, scale_ref / 900.0)
+        thickness_label = max(2, int(scale_ref / 300))
+        thickness_score = max(1, int(scale_ref / 500))
+
+        # Colors: green for OK, red for NG
+        color = (0, 200, 0) if pred == "OK" else (0, 0, 255)
+
+        # Draw label (OK/NG) at top-left
+        label_text = pred
+        cv2.putText(
+            blended_bgr, label_text, (10, int(40 * font_scale_label)),
+            cv2.FONT_HERSHEY_SIMPLEX, font_scale_label, color,
+            thickness_label, cv2.LINE_AA,
+        )
+
+        # Draw score info below the label
+        score_text = f"Score: {score:.4f} / Thr: {threshold:.4f}"
+        y_offset = int(40 * font_scale_label) + int(35 * font_scale_score)
+        cv2.putText(
+            blended_bgr, score_text, (10, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX, font_scale_score, (255, 255, 255),
+            thickness_score, cv2.LINE_AA,
+        )
+
+        blended = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
 
     # Save as JPEG for speed (much faster than PNG for large images)
     suffix = out_path.suffix.lower()

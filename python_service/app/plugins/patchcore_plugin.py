@@ -268,6 +268,9 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
                     heatmap=heatmap,
                     vmin=vmin,
                     vmax=vmax,
+                    score=score,
+                    threshold=threshold,
+                    pred=pred,
                 )
                 artifacts["overlay"] = overlay_output_path
             except Exception:
@@ -329,6 +332,9 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
                         heatmap=heatmap,
                         vmin=vmin,
                         vmax=vmax,
+                        score=score,
+                        threshold=threshold,
+                        pred=pred,
                     )
                     artifacts["overlay"] = overlay_file
                 except Exception:
