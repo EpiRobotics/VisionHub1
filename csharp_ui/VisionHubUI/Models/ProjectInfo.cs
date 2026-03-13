@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace VisionHubUI.Models;
 
@@ -33,6 +34,13 @@ public class ProjectInfo
 
     [JsonProperty("stats")]
     public ProjectStats? Stats { get; set; }
+
+    /// <summary>
+    /// Full nested config from GET /projects/{id} detail endpoint.
+    /// Not present in list endpoint.
+    /// </summary>
+    [JsonProperty("config")]
+    public JObject? Config { get; set; }
 
     public override string ToString()
     {
