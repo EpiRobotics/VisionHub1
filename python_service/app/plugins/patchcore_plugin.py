@@ -223,7 +223,14 @@ class PatchCoreTilingV1Plugin(AlgoPluginBase):
         infer_ms = (t_infer_end - t_infer_start) * 1000
 
         # --- Decision ---
-        threshold = self._threshold
+        # Use thr_global from project config (set via UI) if available,
+        # otherwise fall back to the threshold stored in the model file.
+        decision_cfg = config.get("postprocess", {}).get("decision", {})
+        thr_global = decision_cfg.get("thr_global")
+        if thr_global is not None:
+            threshold = float(thr_global)
+        else:
+            threshold = self._threshold
         pred = "NG" if score >= threshold else "OK"
 
         # --- Postprocessing ---
