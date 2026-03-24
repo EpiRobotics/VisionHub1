@@ -24,15 +24,15 @@
 #   - Rough labeling is sufficient (pixel-perfect edges not required)
 #   - 50-100 labeled images are typically enough for good results
 
-project_id: panel_seg
+project_id: panel
 display_name: "Panel Segmentation - Board Region Detection"
 enabled: true
 
 io:
-  tcp_port: 9401              # Independent port for this project
+  tcp_port: 9601              # Independent port for this project
   bind_host: "0.0.0.0"
   allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
-  output_dir: "${DATA_ROOT}/projects/panel_seg/runs"
+  output_dir: "${DATA_ROOT}/projects/panel/runs"
 
 image:
   file_ready:
@@ -61,17 +61,11 @@ pipeline:
     device: "cuda"            # cuda / cpu / auto
   postprocess:
     decision:
-      threshold: 0.5          # Binarization threshold for probability map
-      min_panel_ratio: 0.0    # Minimum panel coverage ratio (0 = disabled)
-                               # Set to e.g. 0.05 to reject images with <5% panel
+      threshold: "from_model"   # Must be string (VisionHub schema requirement)
     export:
-      save_mask: true          # Save binary mask PNG
-      save_overlay: true       # Save overlay visualization (green=panel, red=bg)
-      overlay_alpha: 0.3       # Overlay transparency
-      morph_close_ksize: 15    # Morphological closing kernel size (fill holes, 0=off)
-      morph_open_ksize: 5      # Morphological opening kernel size (remove noise, 0=off)
+      save_overlay: true        # Save overlay to overlay_output_path
 
-  # Panel segmentation training parameters
+  # Panel segmentation training parameters (underscore prefix = not validated by schema)
   _train:
     # --- Model ---
     input_size: 256             # Resize images to this size for training/inference
@@ -88,3 +82,14 @@ pipeline:
     # --- Data augmentation ---
     augment: true               # Enable random flips, rotations, brightness/contrast
     num_workers: 2              # DataLoader workers
+
+  # Panel segmentation inference parameters (underscore prefix = not validated by schema)
+  _panel_seg:
+    seg_threshold: 0.5          # Binarization threshold for probability map
+    min_panel_ratio: 0.0        # Minimum panel coverage ratio (0 = disabled)
+                                 # Set to e.g. 0.05 to reject images with <5% panel
+    save_mask: true              # Save binary mask PNG
+    save_overlay: true           # Save overlay visualization (green=panel, red=bg)
+    overlay_alpha: 0.3           # Overlay transparency
+    morph_close_ksize: 15        # Morphological closing kernel size (fill holes, 0=off)
+    morph_open_ksize: 5          # Morphological opening kernel size (remove noise, 0=off)

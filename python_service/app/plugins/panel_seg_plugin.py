@@ -32,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from app.plugins.base import AlgoPluginBase
 from app.plugins.panel_seg_core import (
     SegTrainConfig,
@@ -74,6 +76,7 @@ class PanelSegV1Plugin(AlgoPluginBase):
         self._loaded: bool = False
         self._model_version: str = ""
         self._threshold: float = 0.5
+        self._panel_seg_cfg: dict[str, Any] = {}
 
     @property
     def is_loaded(self) -> bool:
@@ -105,9 +108,9 @@ class PanelSegV1Plugin(AlgoPluginBase):
         self._model, self._input_size = load_seg_model(str(pth_file), device=effective_device)
         self._device_str = effective_device
 
-        # Read threshold from config
-        post_cfg = config.get("postprocess", {}).get("decision", {})
-        self._threshold = float(post_cfg.get("threshold", 0.5))
+        # Read panel_seg params from raw YAML (model_dump() strips underscore keys)
+        self._panel_seg_cfg = self._read_raw_panel_seg_cfg(model_path)
+        self._threshold = float(self._panel_seg_cfg.get("seg_threshold", 0.5))
 
         # Read version from meta.json or directory name
         meta_json = model_path / "meta.json"
@@ -139,6 +142,29 @@ class PanelSegV1Plugin(AlgoPluginBase):
         self._config = {}
         logger.info("Panel segmentation model unloaded.")
 
+    @staticmethod
+    def _read_raw_panel_seg_cfg(model_path: Path) -> dict[str, Any]:
+        """Read _panel_seg config from the raw project.yaml.
+
+        Pydantic model_dump() strips underscore-prefixed keys, so we read
+        the raw YAML directly to get _panel_seg inference parameters.
+        """
+        # model_path is like <project_dir>/models/<version>/
+        project_dir = model_path.parent.parent
+        yaml_path = project_dir / "project.yaml"
+        if not yaml_path.exists():
+            # Try one more level up in case model_path is the pth file itself
+            project_dir = model_path.parent.parent.parent
+            yaml_path = project_dir / "project.yaml"
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                return raw.get("pipeline", {}).get("_panel_seg", {})
+            except Exception:
+                logger.warning("Failed to read _panel_seg from %s", yaml_path, exc_info=True)
+        return {}
+
     def infer(self, image_path: str, config: dict[str, Any]) -> dict[str, Any]:
         """Run panel segmentation on a single image.
 
@@ -151,15 +177,13 @@ class PanelSegV1Plugin(AlgoPluginBase):
         job_id = config.get("_job_id", "unknown")
         output_dir = config.get("_output_dir", "")
 
-        # Read post-processing params from config
-        post_cfg = config.get("postprocess", {})
-        decision_cfg = post_cfg.get("decision", {})
-        export_cfg = post_cfg.get("export", {})
+        # Use _panel_seg params loaded from raw YAML during load()
+        ps_cfg = self._panel_seg_cfg
 
-        threshold = float(decision_cfg.get("threshold", self._threshold))
-        morph_close = int(export_cfg.get("morph_close_ksize", 15))
-        morph_open = int(export_cfg.get("morph_open_ksize", 5))
-        min_panel_ratio = float(decision_cfg.get("min_panel_ratio", 0.0))
+        threshold = float(ps_cfg.get("seg_threshold", self._threshold))
+        morph_close = int(ps_cfg.get("morph_close_ksize", 15))
+        morph_open = int(ps_cfg.get("morph_open_ksize", 5))
+        min_panel_ratio = float(ps_cfg.get("min_panel_ratio", 0.0))
 
         t_infer_start = time.perf_counter()
 
@@ -191,6 +215,7 @@ class PanelSegV1Plugin(AlgoPluginBase):
         # Save artifacts
         t_save_start = time.perf_counter()
         artifacts: dict[str, str] = {}
+        overlay_alpha = float(ps_cfg.get("overlay_alpha", 0.3))
 
         if output_dir:
             today = datetime.now().strftime("%Y-%m-%d")
@@ -198,20 +223,20 @@ class PanelSegV1Plugin(AlgoPluginBase):
             artifacts_dir.mkdir(parents=True, exist_ok=True)
 
             # Save binary mask
-            if export_cfg.get("save_mask", True):
+            if ps_cfg.get("save_mask", True):
                 mask_path = str(artifacts_dir / f"{job_id}_panel_mask.png")
                 import cv2
                 cv2.imwrite(mask_path, mask)
                 artifacts["mask"] = mask_path
 
             # Save overlay
-            if export_cfg.get("save_overlay", True):
+            if ps_cfg.get("save_overlay", True):
                 overlay_path = str(artifacts_dir / f"{job_id}_panel_overlay.jpg")
                 save_overlay(
                     out_path=Path(overlay_path),
                     image_path=image_path,
                     mask=mask,
-                    alpha=float(export_cfg.get("overlay_alpha", 0.3)),
+                    alpha=overlay_alpha,
                 )
                 artifacts["overlay"] = overlay_path
 
@@ -223,7 +248,7 @@ class PanelSegV1Plugin(AlgoPluginBase):
                     out_path=Path(overlay_output_path),
                     image_path=image_path,
                     mask=mask,
-                    alpha=float(export_cfg.get("overlay_alpha", 0.3)),
+                    alpha=overlay_alpha,
                 )
                 artifacts["overlay"] = overlay_output_path
             except Exception:
@@ -274,7 +299,20 @@ class PanelSegV1Plugin(AlgoPluginBase):
             progress_cb(0.0, "Starting panel segmentation training...")
 
         ds_path = Path(dataset_dir)
-        train_cfg = config.get("_train", {})
+
+        # Read _train from raw YAML (model_dump() strips underscore keys)
+        project_dir = out_path.parent.parent  # out_model_dir = <project>/models/<ver>
+        yaml_path = project_dir / "project.yaml"
+        train_cfg: dict[str, Any] = {}
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                train_cfg = raw.get("pipeline", {}).get("_train", {})
+            except Exception:
+                logger.warning("Failed to read _train from %s", yaml_path, exc_info=True)
+        if not train_cfg:
+            train_cfg = config.get("_train", {})
 
         # Locate directories
         image_dir = ds_path / "images"
