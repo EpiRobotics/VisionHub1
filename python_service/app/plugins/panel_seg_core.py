@@ -310,6 +310,7 @@ class PanelSegDataset:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[Any, Any]:
+        _ensure_torch()  # needed when DataLoader spawns worker processes
         sample = self.samples[idx]
 
         # Read image

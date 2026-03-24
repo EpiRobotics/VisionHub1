@@ -81,7 +81,7 @@ pipeline:
 
     # --- Data augmentation ---
     augment: true               # Enable random flips, rotations, brightness/contrast
-    num_workers: 2              # DataLoader workers
+    num_workers: 0              # DataLoader workers (0 recommended on Windows)
 
   # Panel segmentation inference parameters (underscore prefix = not validated by schema)
   _panel_seg:
