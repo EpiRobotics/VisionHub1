@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,113 +255,113 @@ class SegSample:
     mask_path: str
 
 
-def build_seg_dataset_class() -> type:
-    """Build the dataset class after torch is imported."""
-    _ensure_torch()
-    from torch.utils.data import Dataset
+class PanelSegDataset:
+    """Dataset for panel segmentation training.
 
-    class PanelSegDataset(Dataset):
-        """Dataset for panel segmentation training.
+    Defined at module level so multiprocessing DataLoader can pickle it.
+    Inherits from torch.utils.data.Dataset at runtime (lazy import).
 
-        Expects:
-            image_dir/   -> input images (*.bmp, *.jpg, *.png, etc.)
-            mask_dir/    -> binary mask images (same name, white=panel, black=bg)
+    Expects:
+        image_dir/   -> input images (*.bmp, *.jpg, *.png, etc.)
+        mask_dir/    -> binary mask images (same name, white=panel, black=bg)
 
-        Images and masks are matched by filename stem.
-        """
+    Images and masks are matched by filename stem.
+    """
 
-        def __init__(
-            self,
-            image_dir: Path,
-            mask_dir: Path,
-            input_size: int = 256,
-            augment: bool = True,
-        ) -> None:
-            self.input_size = input_size
-            self.augment = augment
+    # Will be set to True after __init_subclass__ / first instantiation
+    _torch_base_patched: bool = False
 
-            # Match images to masks by stem
-            img_files = {p.stem: p for p in list_images(image_dir)}
-            mask_files = {p.stem: p for p in list_images(mask_dir)}
+    def __init__(
+        self,
+        image_dir: Path,
+        mask_dir: Path,
+        input_size: int = 256,
+        augment: bool = True,
+    ) -> None:
+        _ensure_torch()
+        self.input_size = input_size
+        self.augment = augment
 
-            self.samples: list[SegSample] = []
-            for stem in sorted(img_files.keys()):
-                if stem in mask_files:
-                    self.samples.append(SegSample(
-                        image_path=str(img_files[stem]),
-                        mask_path=str(mask_files[stem]),
-                    ))
+        # Match images to masks by stem
+        img_files = {p.stem: p for p in list_images(image_dir)}
+        mask_files = {p.stem: p for p in list_images(mask_dir)}
 
-            if not self.samples:
-                logger.warning(
-                    "No matching image-mask pairs found in %s and %s",
-                    image_dir, mask_dir,
-                )
+        self.samples: list[SegSample] = []
+        for stem in sorted(img_files.keys()):
+            if stem in mask_files:
+                self.samples.append(SegSample(
+                    image_path=str(img_files[stem]),
+                    mask_path=str(mask_files[stem]),
+                ))
 
-            # Transforms
-            self.img_transform = _transforms.Compose([
-                _transforms.ToTensor(),
-                _transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225],
-                ),
-            ])
-
-        def __len__(self) -> int:
-            return len(self.samples)
-
-        def __getitem__(self, idx: int) -> tuple[Any, Any]:
-            sample = self.samples[idx]
-
-            # Read image
-            img_bgr = imread_any(Path(sample.image_path))
-            if img_bgr is None:
-                raise RuntimeError(f"Failed to read image: {sample.image_path}")
-            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-            # Read mask (grayscale)
-            mask = cv2.imdecode(
-                np.fromfile(sample.mask_path, dtype=np.uint8),
-                cv2.IMREAD_GRAYSCALE,
+        if not self.samples:
+            logger.warning(
+                "No matching image-mask pairs found in %s and %s",
+                image_dir, mask_dir,
             )
-            if mask is None:
-                raise RuntimeError(f"Failed to read mask: {sample.mask_path}")
 
-            # Resize
-            img_rgb = cv2.resize(img_rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
-            mask = cv2.resize(mask, (self.input_size, self.input_size), interpolation=cv2.INTER_NEAREST)
+        # Transforms
+        self.img_transform = _transforms.Compose([
+            _transforms.ToTensor(),
+            _transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ])
 
-            # Augmentation
-            if self.augment:
-                # Random horizontal flip
-                if random.random() > 0.5:
-                    img_rgb = np.fliplr(img_rgb).copy()
-                    mask = np.fliplr(mask).copy()
-                # Random vertical flip
-                if random.random() > 0.5:
-                    img_rgb = np.flipud(img_rgb).copy()
-                    mask = np.flipud(mask).copy()
-                # Random 90-degree rotation
-                k = random.randint(0, 3)
-                if k > 0:
-                    img_rgb = np.rot90(img_rgb, k).copy()
-                    mask = np.rot90(mask, k).copy()
-                # Random brightness/contrast
-                if random.random() > 0.5:
-                    alpha = random.uniform(0.8, 1.2)  # contrast
-                    beta = random.uniform(-20, 20)     # brightness
-                    img_rgb = np.clip(img_rgb.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+    def __len__(self) -> int:
+        return len(self.samples)
 
-            # Convert to tensors
-            img_tensor = self.img_transform(img_rgb)
+    def __getitem__(self, idx: int) -> tuple[Any, Any]:
+        sample = self.samples[idx]
 
-            # Mask: binarize (>127 = panel = 1.0) and convert to float tensor
-            mask_binary = (mask > 127).astype(np.float32)
-            mask_tensor = _torch.from_numpy(mask_binary).unsqueeze(0)  # (1, H, W)
+        # Read image
+        img_bgr = imread_any(Path(sample.image_path))
+        if img_bgr is None:
+            raise RuntimeError(f"Failed to read image: {sample.image_path}")
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-            return img_tensor, mask_tensor
+        # Read mask (grayscale)
+        mask = cv2.imdecode(
+            np.fromfile(sample.mask_path, dtype=np.uint8),
+            cv2.IMREAD_GRAYSCALE,
+        )
+        if mask is None:
+            raise RuntimeError(f"Failed to read mask: {sample.mask_path}")
 
-    return PanelSegDataset
+        # Resize
+        img_rgb = cv2.resize(img_rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        mask = cv2.resize(mask, (self.input_size, self.input_size), interpolation=cv2.INTER_NEAREST)
+
+        # Augmentation
+        if self.augment:
+            # Random horizontal flip
+            if random.random() > 0.5:
+                img_rgb = np.fliplr(img_rgb).copy()
+                mask = np.fliplr(mask).copy()
+            # Random vertical flip
+            if random.random() > 0.5:
+                img_rgb = np.flipud(img_rgb).copy()
+                mask = np.flipud(mask).copy()
+            # Random 90-degree rotation
+            k = random.randint(0, 3)
+            if k > 0:
+                img_rgb = np.rot90(img_rgb, k).copy()
+                mask = np.rot90(mask, k).copy()
+            # Random brightness/contrast
+            if random.random() > 0.5:
+                alpha = random.uniform(0.8, 1.2)  # contrast
+                beta = random.uniform(-20, 20)     # brightness
+                img_rgb = np.clip(img_rgb.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+
+        # Convert to tensors
+        img_tensor = self.img_transform(img_rgb)
+
+        # Mask: binarize (>127 = panel = 1.0) and convert to float tensor
+        mask_binary = (mask > 127).astype(np.float32)
+        mask_tensor = _torch.from_numpy(mask_binary).unsqueeze(0)  # (1, H, W)
+
+        return img_tensor, mask_tensor
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +412,7 @@ class SegTrainConfig:
     learning_rate: float = 1e-4
     dice_weight: float = 0.5
     freeze_encoder_epochs: int = 5
-    num_workers: int = 2
+    num_workers: int = 0 if sys.platform == "win32" else 2
     augment: bool = True
 
 
@@ -468,8 +469,7 @@ def train_panel_seg(
     device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
 
     # Build datasets
-    DatasetClass = build_seg_dataset_class()
-    train_ds = DatasetClass(
+    train_ds = PanelSegDataset(
         image_dir=train_image_dir,
         mask_dir=train_mask_dir,
         input_size=cfg.input_size,
@@ -494,7 +494,7 @@ def train_panel_seg(
     val_ds = None
     val_loader = None
     if val_image_dir and val_mask_dir and val_image_dir.exists() and val_mask_dir.exists():
-        val_ds = DatasetClass(
+        val_ds = PanelSegDataset(
             image_dir=val_image_dir,
             mask_dir=val_mask_dir,
             input_size=cfg.input_size,
