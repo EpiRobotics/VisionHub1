@@ -1,0 +1,90 @@
+# VisionHub Project Configuration - Panel Segmentation (MobileNetV2-UNet)
+# Copy to DATA_ROOT/projects/<project_id>/project.yaml
+#
+# This project type segments panel (board) regions from background
+# (conveyor rollers, gaps, table surface) using lightweight semantic segmentation.
+#
+# Use case: As a preprocessing step for defect detection pipelines.
+# The output mask can be used to filter out false positives in non-panel areas.
+#
+# Inference input: image only (no JSON annotation needed)
+#   TCP: {"cmd":"INFER","job_id":"001","image_path":"E:\\images\\test.bmp"}
+#
+# Training dataset structure:
+#   datasets/
+#     images/              # Input images (*.bmp, *.jpg, *.png, etc.)
+#     masks/               # Binary mask images (white=panel, black=background)
+#                          # Mask filenames must match image filenames (by stem)
+#     val_images/          # Optional: validation images
+#     val_masks/           # Optional: validation masks
+#
+# Mask labeling tips:
+#   - Use LabelMe or similar tool to draw polygons around panel regions
+#   - Export as binary PNG (white=panel, black=background)
+#   - Rough labeling is sufficient (pixel-perfect edges not required)
+#   - 50-100 labeled images are typically enough for good results
+
+project_id: panel_seg
+display_name: "Panel Segmentation - Board Region Detection"
+enabled: true
+
+io:
+  tcp_port: 9401              # Independent port for this project
+  bind_host: "0.0.0.0"
+  allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
+  output_dir: "${DATA_ROOT}/projects/panel_seg/runs"
+
+image:
+  file_ready:
+    mode: "size_stable"       # size_stable / open_retry
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "panel_seg_v1"
+  model:
+    active: "${PROJECT_DIR}/active_model.json"
+  preprocess:
+    normalize: "imagenet"
+    align:
+      enabled: false
+  infer:
+    device: "cuda"            # cuda / cpu / auto
+  postprocess:
+    decision:
+      threshold: 0.5          # Binarization threshold for probability map
+      min_panel_ratio: 0.0    # Minimum panel coverage ratio (0 = disabled)
+                               # Set to e.g. 0.05 to reject images with <5% panel
+    export:
+      save_mask: true          # Save binary mask PNG
+      save_overlay: true       # Save overlay visualization (green=panel, red=bg)
+      overlay_alpha: 0.3       # Overlay transparency
+      morph_close_ksize: 15    # Morphological closing kernel size (fill holes, 0=off)
+      morph_open_ksize: 5      # Morphological opening kernel size (remove noise, 0=off)
+
+  # Panel segmentation training parameters
+  _train:
+    # --- Model ---
+    input_size: 256             # Resize images to this size for training/inference
+                                 # 256 is a good balance of speed and accuracy
+                                 # Use 512 if you need finer edge precision
+
+    # --- Training hyperparameters ---
+    batch_size: 8               # Training batch size (reduce if GPU OOM)
+    num_epochs: 50              # Number of training epochs
+    learning_rate: 0.0001       # Adam optimizer learning rate
+    dice_weight: 0.5            # Weight for Dice loss (0.5 = equal BCE + Dice)
+    freeze_encoder_epochs: 5    # Freeze encoder for first N epochs (transfer learning)
+
+    # --- Data augmentation ---
+    augment: true               # Enable random flips, rotations, brightness/contrast
+    num_workers: 2              # DataLoader workers
