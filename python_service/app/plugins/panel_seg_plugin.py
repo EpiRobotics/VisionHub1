@@ -226,7 +226,10 @@ class PanelSegV1Plugin(AlgoPluginBase):
             if ps_cfg.get("save_mask", True):
                 mask_path = str(artifacts_dir / f"{job_id}_panel_mask.png")
                 import cv2
-                cv2.imwrite(mask_path, mask)
+                ok, buf = cv2.imencode(".png", mask)
+                if ok:
+                    with open(mask_path, "wb") as mf:
+                        mf.write(buf.tobytes())
                 artifacts["mask"] = mask_path
 
             # Save overlay

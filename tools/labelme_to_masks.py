@@ -33,6 +33,22 @@ import numpy as np
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
+def imwrite_unicode(path: str, img: np.ndarray) -> bool:
+    """cv2.imwrite replacement that handles non-ASCII (e.g. Chinese) paths on Windows.
+
+    OpenCV's imwrite silently fails with unicode paths on Windows.
+    This uses imencode + Python file I/O which handles unicode correctly.
+    """
+    ext = Path(path).suffix
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        return False
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+    return True
+
+
 def find_image_for_json(json_path: Path, labelme_dir: Path) -> Path | None:
     """Find the original image file corresponding to a LabelMe JSON file.
 
@@ -205,9 +221,9 @@ def main() -> None:
         if img_path is None:
             print(f"  WARN: {json_path.name} - original image not found, saving mask only")
 
-        # Save mask as PNG
+        # Save mask as PNG (use imwrite_unicode for non-ASCII path support on Windows)
         mask_out = masks_dir / f"{stem}.png"
-        cv2.imwrite(str(mask_out), mask)
+        imwrite_unicode(str(mask_out), mask)
 
         # Copy original image
         if img_path is not None and args.copy_images:
