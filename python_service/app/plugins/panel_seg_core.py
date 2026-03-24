@@ -268,9 +268,6 @@ class PanelSegDataset:
     Images and masks are matched by filename stem.
     """
 
-    # Will be set to True after __init_subclass__ / first instantiation
-    _torch_base_patched: bool = False
-
     def __init__(
         self,
         image_dir: Path,
