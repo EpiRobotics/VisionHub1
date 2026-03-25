@@ -244,19 +244,22 @@ class PanelSegV1Plugin(AlgoPluginBase):
                 artifacts["overlay"] = overlay_path
 
         # Fixed overlay output path (like other plugins)
+        # For panel_seg, save the binary mask (black/white) instead of
+        # the colored overlay so external vision software gets the mask directly.
         overlay_output_path = config.get("_overlay_output_path", "")
         if overlay_output_path:
             try:
-                save_overlay(
-                    out_path=Path(overlay_output_path),
-                    image_path=image_path,
-                    mask=mask,
-                    alpha=overlay_alpha,
-                )
-                artifacts["overlay"] = overlay_output_path
+                import cv2
+                out_p = Path(overlay_output_path)
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                ok, buf = cv2.imencode(out_p.suffix or ".png", mask)
+                if ok:
+                    with open(str(out_p), "wb") as mf:
+                        mf.write(buf.tobytes())
+                artifacts["mask_output"] = overlay_output_path
             except Exception:
                 logger.warning(
-                    "Failed to save overlay to %s for job %s",
+                    "Failed to save mask to %s for job %s",
                     overlay_output_path, job_id, exc_info=True,
                 )
 
