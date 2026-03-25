@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -41,7 +40,6 @@ from app.plugins.panel_seg_core import (
     compute_panel_ratio,
     load_seg_model,
     predict_panel_mask,
-    save_overlay,
     train_panel_seg,
 )
 from app.plugins.registry import PluginRegistry
@@ -175,7 +173,6 @@ class PanelSegV1Plugin(AlgoPluginBase):
             raise RuntimeError("Panel segmentation model not loaded")
 
         job_id = config.get("_job_id", "unknown")
-        output_dir = config.get("_output_dir", "")
 
         # Use _panel_seg params loaded from raw YAML during load()
         ps_cfg = self._panel_seg_cfg
@@ -212,36 +209,9 @@ class PanelSegV1Plugin(AlgoPluginBase):
             pred = "OK"
             score = panel_ratio
 
-        # Save artifacts
+        # Save artifacts (only to overlay_output_path, skip runs/ to save time)
         t_save_start = time.perf_counter()
         artifacts: dict[str, str] = {}
-        overlay_alpha = float(ps_cfg.get("overlay_alpha", 0.3))
-
-        if output_dir:
-            today = datetime.now().strftime("%Y-%m-%d")
-            artifacts_dir = Path(output_dir) / today / "artifacts"
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save binary mask
-            if ps_cfg.get("save_mask", True):
-                mask_path = str(artifacts_dir / f"{job_id}_panel_mask.png")
-                import cv2
-                ok, buf = cv2.imencode(".png", mask)
-                if ok:
-                    with open(mask_path, "wb") as mf:
-                        mf.write(buf.tobytes())
-                artifacts["mask"] = mask_path
-
-            # Save overlay
-            if ps_cfg.get("save_overlay", True):
-                overlay_path = str(artifacts_dir / f"{job_id}_panel_overlay.jpg")
-                save_overlay(
-                    out_path=Path(overlay_path),
-                    image_path=image_path,
-                    mask=mask,
-                    alpha=overlay_alpha,
-                )
-                artifacts["overlay"] = overlay_path
 
         # Fixed overlay output path (like other plugins)
         # For panel_seg, save the binary mask (black/white) instead of
