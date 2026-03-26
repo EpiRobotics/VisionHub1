@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using VisionHubUI.Models;
 using VisionHubUI.Services;
 
@@ -18,6 +19,9 @@ public partial class MainForm : Form
     private System.Windows.Forms.Timer _refreshTimer;
     private List<ProjectInfo> _projects = new();
     private string? _selectedProjectId;
+
+    // Python backend process (auto-launched on startup, killed on close)
+    private Process? _backendProcess;
 
     // Per-project log state: project_id -> next_index for incremental fetch
     private readonly Dictionary<string, int> _logNextIndex = new();
@@ -51,6 +55,7 @@ public partial class MainForm : Form
         _apiClient = new VisionHubApiClient("http://localhost:8100");
         InitializeComponents();
         SetupTimers();
+        StartBackendProcess();
     }
 
     private void InitializeComponents()
@@ -1728,6 +1733,106 @@ public partial class MainForm : Form
         }
     }
 
+    // ==================================================================
+    // Python Backend Auto-Launch
+    // ==================================================================
+
+    private void StartBackendProcess()
+    {
+        try
+        {
+            // Determine paths relative to the exe location
+            var exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            // Walk up to find the VisionHub root (parent of csharp_ui)
+            var rootDir = FindVisionHubRoot(exeDir);
+            if (rootDir == null)
+            {
+                // Not found — backend may already be running externally
+                return;
+            }
+
+            var pythonServiceDir = Path.Combine(rootDir, "python_service");
+            var venvPython = Path.Combine(pythonServiceDir, ".venv", "Scripts", "python.exe");
+            var configPath = Path.Combine(rootDir, "service", "service_config.yaml");
+
+            // Check if venv exists
+            if (!File.Exists(venvPython))
+            {
+                // Try alternate venv name
+                venvPython = Path.Combine(pythonServiceDir, "venv", "Scripts", "python.exe");
+                if (!File.Exists(venvPython))
+                {
+                    // No venv found — backend may be running externally
+                    return;
+                }
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = venvPython,
+                Arguments = "-m app.main",
+                WorkingDirectory = pythonServiceDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+            };
+
+            // Set config path environment variable
+            if (File.Exists(configPath))
+            {
+                psi.Environment["VISIONHUB_CONFIG"] = configPath;
+            }
+
+            _backendProcess = Process.Start(psi);
+        }
+        catch
+        {
+            // Silently ignore — backend may already be running or user starts it manually
+            _backendProcess = null;
+        }
+    }
+
+    private static string? FindVisionHubRoot(string startDir)
+    {
+        // Walk up directory tree looking for a folder that contains both
+        // "python_service" and "service" subdirectories.
+        var dir = new DirectoryInfo(startDir);
+        for (int i = 0; i < 6 && dir != null; i++)
+        {
+            var pythonService = Path.Combine(dir.FullName, "python_service");
+            var serviceDir = Path.Combine(dir.FullName, "service");
+            if (Directory.Exists(pythonService) && Directory.Exists(serviceDir))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        return null;
+    }
+
+    private void StopBackendProcess()
+    {
+        if (_backendProcess != null && !_backendProcess.HasExited)
+        {
+            try
+            {
+                // Try graceful shutdown first
+                _backendProcess.Kill(entireProcessTree: true);
+                _backendProcess.WaitForExit(3000);
+            }
+            catch
+            {
+                // Ignore errors during cleanup
+            }
+            finally
+            {
+                _backendProcess.Dispose();
+                _backendProcess = null;
+            }
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _healthTimer.Stop();
@@ -1739,6 +1844,7 @@ public partial class MainForm : Form
         }
         _logTimers.Clear();
         _apiClient.Dispose();
+        StopBackendProcess();
         base.OnFormClosing(e);
     }
 }
