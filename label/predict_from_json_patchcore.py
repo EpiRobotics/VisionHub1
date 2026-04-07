@@ -52,20 +52,35 @@ def imread_any_bgr(p: Path):
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 class ResNetFeat(nn.Module):
-    def __init__(self):
+    def __init__(self, feature_layers: str = "layer2"):
         super().__init__()
         m = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         self.stem = nn.Sequential(m.conv1, m.bn1, m.relu, m.maxpool)
         self.layer1 = m.layer1
         self.layer2 = m.layer2
+        self.feature_layers = feature_layers
     def forward(self, x):
+        if self.feature_layers == "multi":
+            return self._forward_multiscale(x)
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
         return x
+    def _forward_multiscale(self, x):
+        """Multi-scale: concat layer1 (64-dim, 16x16) + upsampled layer2 (128-dim)."""
+        x = self.stem(x)
+        feat1 = self.layer1(x)
+        feat2 = self.layer2(feat1)
+        feat2_up = nn.functional.interpolate(
+            feat2, size=feat1.shape[2:], mode="bilinear", align_corners=False,
+        )
+        return torch.cat([feat1, feat2_up], dim=1)
 
-def preprocess(gray, size=128):
+def preprocess(gray, size=128, clahe_clip=0.0):
     g = cv2.resize(gray, (size,size), interpolation=cv2.INTER_CUBIC)
+    if clahe_clip > 0:
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(4, 4))
+        g = clahe.apply(g)
     rgb = np.stack([g,g,g], axis=-1).astype(np.uint8)
     tf = transforms.Compose([
         transforms.ToTensor(),
@@ -85,7 +100,11 @@ def score_patchcore(emb_np: np.ndarray, nn: NearestNeighbors, mode: str, topk: i
     if mode == "max":
         return float(d.max())
     topk = min(topk, d.shape[0])
-    return float(np.mean(np.sort(d)[-topk:]))
+    topk_mean = float(np.mean(np.sort(d)[-topk:]))
+    if mode == "adaptive":
+        max_val = float(d.max())
+        return float(np.sqrt(max_val * topk_mean))
+    return topk_mean
 
 def main():
     import argparse
@@ -121,8 +140,14 @@ def main():
     if not cls_models:
         print("[ERROR] no class models in", model_dir); return
 
+    # Detect feature_layers from loaded models
+    effective_fl = "layer2"
+    if cls_models:
+        first_m = next(iter(cls_models.values()))
+        effective_fl = str(first_m.get("feature_layers", "layer2"))
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    net = ResNetFeat().to(device).eval()
+    net = ResNetFeat(feature_layers=effective_fl).to(device).eval()
 
     detail = [["image","idx","ch","cls","score","thr_used","decision","x0","y0","x1","y1"]]
     summary = [["image","total","ng","unknown"]]
@@ -175,7 +200,8 @@ def main():
             thr = float(args.thr_global) if args.thr_global is not None else float(m["thr"])
 
             patch = gray_full[y0:y1, x0:x1]
-            x = preprocess(patch, size=int(m["img_size"])).to(device)
+            x = preprocess(patch, size=int(m["img_size"]),
+                           clahe_clip=float(m.get("clahe_clip", 0.0))).to(device)
             with torch.no_grad():
                 fmap = net(x)
                 emb = extract_patch_embeddings(fmap).cpu().numpy().astype(np.float32)

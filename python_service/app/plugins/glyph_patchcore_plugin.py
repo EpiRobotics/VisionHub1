@@ -109,6 +109,8 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             use_gpu_knn=bool(infer_cfg.get("use_gpu_knn", True)),
             cnn_batch=int(infer_cfg.get("cnn_batch", 64)),
             knn_bank_block=int(infer_cfg.get("knn_bank_block", 20000)),
+            feature_layers=str(infer_cfg.get("feature_layers", "layer2")),
+            clahe_clip=float(infer_cfg.get("clahe_clip", 0.0)),
         )
 
         # Read version from meta.json or directory name
@@ -306,6 +308,8 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             p_thr=float(train_cfg.get("p_thr", 0.995)),
             min_per_class=int(train_cfg.get("min_per_class", 10)),
             progress_cb=progress_cb,
+            feature_layers=str(train_cfg.get("feature_layers", "layer2")),
+            clahe_clip=float(train_cfg.get("clahe_clip", 0.0)),
         )
 
         # --- Step 3: Save meta.json ---
@@ -324,6 +328,8 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
                 "p_thr": float(train_cfg.get("p_thr", 0.995)),
                 "max_patches_per_class": int(train_cfg.get("max_patches_per_class", 30000)),
                 "pad": pad,
+                "feature_layers": str(train_cfg.get("feature_layers", "layer2")),
+                "clahe_clip": float(train_cfg.get("clahe_clip", 0.0)),
             },
         }
         with open(out_path / "meta.json", "w", encoding="utf-8") as f:

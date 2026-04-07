@@ -33,6 +33,15 @@ USE_FP16 = True
 CNN_BATCH = 64
 
 KNN_ON_GPU = True
+
+# --- Small-defect enhancement options ---
+# "layer2" = original (128-dim, 8x8 patches)
+# "multi"  = layer1+layer2 concatenated (192-dim, 16x16 patches, 4x more patches)
+#            Requires models trained with feature_layers="multi"
+FEATURE_LAYERS = "layer2"
+# CLAHE local contrast enhancement (0 = disabled, try 1.0-3.0 for small defects)
+# Requires models trained with matching clahe_clip value
+CLAHE_CLIP = 0.0
 # bank 已经每类~15000，block 直接开大：减少循环次数
 KNN_BANK_BLOCK = 20000
 
@@ -131,18 +140,31 @@ def archive_pair(img_path: Path, json_path: Path):
 
 # ------------------ model ------------------
 class ResNetFeat(nn.Module):
-    def __init__(self):
+    def __init__(self, feature_layers: str = "layer2"):
         super().__init__()
         from torchvision import models
         m = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         self.stem = nn.Sequential(m.conv1, m.bn1, m.relu, m.maxpool)
         self.layer1 = m.layer1
         self.layer2 = m.layer2
+        self.feature_layers = feature_layers
     def forward(self, x):
+        if self.feature_layers == "multi":
+            return self._forward_multiscale(x)
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
         return x
+    def _forward_multiscale(self, x):
+        """Multi-scale: concat layer1 (64-dim, 16x16) + upsampled layer2 (128-dim).
+        Result: [B, 192, H1, W1] with 4x more patches for small-defect sensitivity."""
+        x = self.stem(x)
+        feat1 = self.layer1(x)
+        feat2 = self.layer2(feat1)
+        feat2_up = nn.functional.interpolate(
+            feat2, size=feat1.shape[2:], mode="bilinear", align_corners=False,
+        )
+        return torch.cat([feat1, feat2_up], dim=1)
 
 _TF = None
 def _get_tf():
@@ -155,8 +177,12 @@ def _get_tf():
         ])
     return _TF
 
-def preprocess_gray_to_tensor(gray: np.ndarray, size: int) -> torch.Tensor:
+def preprocess_gray_to_tensor(gray: np.ndarray, size: int,
+                               clahe_clip: float = 0.0) -> torch.Tensor:
     g = cv2.resize(gray, (size,size), interpolation=cv2.INTER_CUBIC)
+    if clahe_clip > 0:
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(4, 4))
+        g = clahe.apply(g)
     rgb = np.stack([g,g,g], axis=-1).astype(np.uint8)
     return _get_tf()(rgb).unsqueeze(0)  # [1,3,S,S]
 
@@ -199,7 +225,11 @@ def score_from_patch_d(d_patch: torch.Tensor, score_mode: str, topk: int) -> flo
         return float(d_patch.max().item())
     topk = max(1, min(int(topk), d_patch.numel()))
     v = torch.topk(d_patch, k=topk, largest=True).values
-    return float(v.mean().item())
+    topk_mean = float(v.mean().item())
+    if score_mode == "adaptive":
+        max_val = float(d_patch.max().item())
+        return float(np.sqrt(max_val * topk_mean))
+    return topk_mean
 
 @dataclass
 class ClassModel:
@@ -211,6 +241,8 @@ class ClassModel:
     thr: float
     bank_t: torch.Tensor
     bank_norm: torch.Tensor
+    feature_layers: str = "layer2"
+    clahe_clip: float = 0.0
 
 class PatchCoreSingle:
     def __init__(self, model_dir: Path):
@@ -219,7 +251,6 @@ class PatchCoreSingle:
         if self.device == "cuda":
             torch.backends.cudnn.benchmark = True
 
-        self.net = ResNetFeat().to(self.device).eval()
         self.cls_models: Dict[str, ClassModel] = {}
 
         files = sorted(Path(model_dir).glob("*.joblib"))
@@ -238,16 +269,25 @@ class PatchCoreSingle:
             score_mode = str(m.get("score_mode", "topk"))
             topk = int(m.get("topk", 10))
             thr = float(m.get("thr", 1e9))
+            model_fl = str(m.get("feature_layers", FEATURE_LAYERS))
+            model_cc = float(m.get("clahe_clip", CLAHE_CLIP))
 
             use_knn_gpu = (KNN_ON_GPU and self.device == "cuda")
             dev = torch.device("cuda") if use_knn_gpu else torch.device("cpu")
             bank_t = torch.from_numpy(bank).to(dev, dtype=torch.float16 if use_knn_gpu else torch.float32)
             bank_norm = (bank_t.to(torch.float32) * bank_t.to(torch.float32)).sum(dim=1)
 
-            self.cls_models[cls] = ClassModel(cls, img_size, k, score_mode, topk, thr, bank_t, bank_norm)
+            self.cls_models[cls] = ClassModel(cls, img_size, k, score_mode, topk, thr, bank_t, bank_norm,
+                                              feature_layers=model_fl, clahe_clip=model_cc)
+
+        # Detect feature_layers from loaded models
+        effective_fl = FEATURE_LAYERS
+        if self.cls_models:
+            effective_fl = next(iter(self.cls_models.values())).feature_layers
+        self.net = ResNetFeat(feature_layers=effective_fl).to(self.device).eval()
 
         print(f"[MODEL] loaded classes: {len(self.cls_models)} from {model_dir}  total_bank={total_bank}")
-        print(f"[MODEL] device={self.device}, fp16={self.fp16}, knn_on_gpu={KNN_ON_GPU and self.device=='cuda'}")
+        print(f"[MODEL] device={self.device}, fp16={self.fp16}, knn_on_gpu={KNN_ON_GPU and self.device=='cuda'}, feature_layers={effective_fl}")
         self._warmup()
 
     def _warmup(self):
@@ -321,7 +361,9 @@ class PatchCoreSingle:
             for sz, idxs in groups.items():
                 for s in range(0, len(idxs), CNN_BATCH):
                     batch_ids = idxs[s:s+CNN_BATCH]
-                    xs = [preprocess_gray_to_tensor(glyphs[gi]["patch"], sz) for gi in batch_ids]
+                    xs = [preprocess_gray_to_tensor(glyphs[gi]["patch"], sz,
+                                                     clahe_clip=glyphs[gi]["cm"].clahe_clip)
+                          for gi in batch_ids]
                     x = torch.cat(xs, dim=0).to(self.device, non_blocking=False)
 
                     if self.fp16:

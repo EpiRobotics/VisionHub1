@@ -136,17 +136,21 @@ def _ensure_torch() -> None:
 class ResNetFeatGlyph:
     """ResNet18 feature extractor up to layer2 (shallow, suitable for glyph defects).
 
-    Uses only layer2 (128-dim features) rather than layer2+layer3 to keep
-    the feature representation focused on local texture/stroke patterns.
+    Supports two modes:
+    - "layer2" (default): Uses only layer2 (128-dim features at ~8x8 resolution)
+    - "multi" (layer1+layer2): Concatenates layer1 (64-dim, ~16x16) with
+      upsampled layer2 (128-dim) to produce 192-dim features at ~16x16 resolution.
+      This gives 4x more patches and higher spatial sensitivity for small defects.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, feature_layers: str = "layer2") -> None:
         _ensure_torch()
         assert _torch is not None and _nn is not None and _models is not None
         m = _models.resnet18(weights=_models.ResNet18_Weights.IMAGENET1K_V1)
         self.stem = _nn.Sequential(m.conv1, m.bn1, m.relu, m.maxpool)
         self.layer1 = m.layer1
         self.layer2 = m.layer2
+        self.feature_layers = feature_layers
         # Build as nn.Module for .to() / .eval() / state_dict
         self._net = _nn.Sequential(self.stem, self.layer1, self.layer2)
 
@@ -162,7 +166,26 @@ class ResNetFeatGlyph:
         return self
 
     def __call__(self, x: Any) -> Any:
+        if self.feature_layers == "multi":
+            return self._forward_multiscale(x)
         return self._net(x)
+
+    def _forward_multiscale(self, x: Any) -> Any:
+        """Multi-scale forward: concatenate layer1 + upsampled layer2.
+
+        Returns [B, 192, H1, W1] where H1/W1 is layer1's spatial resolution.
+        This provides 4x more patches than layer2-only, each covering a smaller
+        area of the original image, making small defects more detectable.
+        """
+        assert _torch is not None and _nn is not None
+        x = self.stem(x)
+        feat1 = self.layer1(x)    # [B, 64, H1, W1]  e.g. 16x16 for 128 input
+        feat2 = self.layer2(feat1) # [B, 128, H2, W2] e.g. 8x8 for 128 input
+        # Upsample layer2 to match layer1's spatial resolution
+        feat2_up = _nn.functional.interpolate(
+            feat2, size=feat1.shape[2:], mode="bilinear", align_corners=False,
+        )
+        return _torch.cat([feat1, feat2_up], dim=1)  # [B, 192, H1, W1]
 
 
 # ---------------------------------------------------------------------------
@@ -185,10 +208,23 @@ def _get_glyph_transform() -> Any:
     return _glyph_tf
 
 
-def preprocess_gray_to_tensor(gray: np.ndarray, size: int) -> Any:
-    """Preprocess a grayscale glyph crop to a [1,3,S,S] tensor."""
+def preprocess_gray_to_tensor(
+    gray: np.ndarray, size: int, clahe_clip: float = 0.0,
+) -> Any:
+    """Preprocess a grayscale glyph crop to a [1,3,S,S] tensor.
+
+    Args:
+        gray: Grayscale glyph image (uint8).
+        size: Target size for resizing.
+        clahe_clip: CLAHE clipLimit for local contrast enhancement.
+            0.0 means disabled (default, backward compatible).
+            Recommended range 1.0-3.0 for small-defect enhancement.
+    """
     _ensure_torch()
     g = cv2.resize(gray, (size, size), interpolation=cv2.INTER_CUBIC)
+    if clahe_clip > 0:
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(4, 4))
+        g = clahe.apply(g)
     rgb = np.stack([g, g, g], axis=-1).astype(np.uint8)
     return _get_glyph_transform()(rgb).unsqueeze(0)
 
@@ -251,8 +287,15 @@ def score_from_patch_distances(d_patch: Any, score_mode: str, topk: int) -> floa
 
     Args:
         d_patch: [N] tensor of patch distances
-        score_mode: "max" or "topk"
-        topk: number of top distances to average
+        score_mode: Aggregation mode:
+            - "max": maximum patch distance (most sensitive, may be noisy)
+            - "topk": mean of top-k largest distances (default, robust)
+            - "adaptive": geometric mean of max and topk-mean, i.e.
+              sqrt(max * topk_mean). This amplifies the anomaly signal
+              from the worst patch while retaining topk robustness.
+              Especially effective for small defects where only 1-2
+              patches are anomalous.
+        topk: number of top distances to average (for "topk" and "adaptive")
     """
     _ensure_torch()
     assert _torch is not None
@@ -260,7 +303,12 @@ def score_from_patch_distances(d_patch: Any, score_mode: str, topk: int) -> floa
         return float(d_patch.max().item())
     topk = max(1, min(int(topk), d_patch.numel()))
     v = _torch.topk(d_patch, k=topk, largest=True).values
-    return float(v.mean().item())
+    topk_mean = float(v.mean().item())
+    if score_mode == "adaptive":
+        max_val = float(d_patch.max().item())
+        # Geometric mean: amplifies max anomaly while keeping topk robustness
+        return float(np.sqrt(max_val * topk_mean))
+    return topk_mean
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +329,8 @@ class GlyphClassModel:
     bank_t: Any          # torch.Tensor on device (fp16 for GPU)
     bank_norm: Any        # torch.Tensor [B] float32
     nn_cpu: Any = None    # sklearn NearestNeighbors (CPU fallback)
+    feature_layers: str = "layer2"  # "layer2" or "multi" (layer1+layer2)
+    clahe_clip: float = 0.0         # CLAHE clipLimit (0 = disabled)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +353,8 @@ class GlyphPatchCoreEngine:
         use_gpu_knn: bool = True,
         cnn_batch: int = 64,
         knn_bank_block: int = 20000,
+        feature_layers: str = "layer2",
+        clahe_clip: float = 0.0,
     ) -> None:
         _ensure_torch()
         assert _torch is not None
@@ -316,17 +368,29 @@ class GlyphPatchCoreEngine:
         self.use_gpu_knn = use_gpu_knn and self.device == "cuda"
         self.cnn_batch = cnn_batch
         self.knn_bank_block = knn_bank_block
+        self.feature_layers = feature_layers
+        self.clahe_clip = clahe_clip
 
         if self.device == "cuda":
             _torch.backends.cudnn.benchmark = True
 
-        # Build feature extractor
-        self.net = ResNetFeatGlyph().to(self.device).eval()
+        # Build feature extractor (detect multi-scale from model files)
         self.cls_models: dict[str, GlyphClassModel] = {}
 
-        # Load class models
+        # Load class models first to detect feature_layers from saved models
         self._load_models(Path(model_dir))
+
+        # Determine effective feature_layers: model-saved value takes priority
+        effective_layers = self._detect_feature_layers()
+        self.net = ResNetFeatGlyph(feature_layers=effective_layers).to(self.device).eval()
         self._warmup()
+
+    def _detect_feature_layers(self) -> str:
+        """Detect feature_layers from loaded models or use engine default."""
+        if self.cls_models:
+            first_model = next(iter(self.cls_models.values()))
+            return first_model.feature_layers
+        return self.feature_layers
 
     def _load_models(self, model_dir: Path) -> None:
         """Load all .joblib class models from the model directory."""
@@ -351,6 +415,9 @@ class GlyphPatchCoreEngine:
             score_mode = str(m.get("score_mode", "topk"))
             topk = int(m.get("topk", 10))
             thr = float(m.get("thr", 1e9))
+            # Read feature_layers and clahe_clip from model if saved during training
+            model_feature_layers = str(m.get("feature_layers", self.feature_layers))
+            model_clahe_clip = float(m.get("clahe_clip", self.clahe_clip))
 
             # Prepare tensors for GPU kNN
             dev = _torch.device("cuda") if self.use_gpu_knn else _torch.device("cpu")
@@ -369,13 +436,16 @@ class GlyphPatchCoreEngine:
                 cls=cls, img_size=img_size, k=k, score_mode=score_mode,
                 topk=topk, thr=thr, bank_t=bank_t, bank_norm=bank_norm,
                 nn_cpu=nn_cpu,
+                feature_layers=model_feature_layers,
+                clahe_clip=model_clahe_clip,
             )
 
         logger.info(
             "Glyph models loaded: %d classes from %s, total_bank=%d, "
-            "device=%s, fp16=%s, gpu_knn=%s",
+            "device=%s, fp16=%s, gpu_knn=%s, feature_layers=%s, clahe_clip=%.1f",
             len(self.cls_models), model_dir, total_bank,
             self.device, self.fp16, self.use_gpu_knn,
+            self._detect_feature_layers(), self.clahe_clip,
         )
 
     def _warmup(self) -> None:
@@ -514,7 +584,13 @@ class GlyphPatchCoreEngine:
             for sz, idxs in groups.items():
                 for s in range(0, len(idxs), self.cnn_batch):
                     batch_ids = idxs[s:s + self.cnn_batch]
-                    xs = [preprocess_gray_to_tensor(glyphs[gi]["patch"], sz) for gi in batch_ids]
+                    xs = [
+                        preprocess_gray_to_tensor(
+                            glyphs[gi]["patch"], sz,
+                            clahe_clip=glyphs[gi]["cm"].clahe_clip,
+                        )
+                        for gi in batch_ids
+                    ]
                     x = _torch.cat(xs, dim=0).to(self.device, non_blocking=False)
 
                     if self.fp16:
@@ -741,6 +817,22 @@ def crop_glyphs_from_json(
     return saved
 
 
+def _compute_ok_score(d_mean: np.ndarray, score_mode: str, topk: int) -> float:
+    """Compute a single glyph-level OK score from patch distances (numpy).
+
+    Supports the same modes as score_from_patch_distances but on numpy arrays,
+    used during training threshold computation.
+    """
+    if score_mode == "max":
+        return float(d_mean.max())
+    tk = min(topk, d_mean.shape[0])
+    topk_mean = float(np.mean(np.sort(d_mean)[-tk:]))
+    if score_mode == "adaptive":
+        max_val = float(d_mean.max())
+        return float(np.sqrt(max_val * topk_mean))
+    return topk_mean
+
+
 def train_glyph_patchcore(
     bank_dir: str,
     out_model_dir: str,
@@ -752,6 +844,8 @@ def train_glyph_patchcore(
     p_thr: float = 0.995,
     min_per_class: int = 10,
     progress_cb: Any = None,
+    feature_layers: str = "layer2",
+    clahe_clip: float = 0.0,
 ) -> dict[str, Any]:
     """Train PatchCore models for each glyph class.
 
@@ -761,11 +855,17 @@ def train_glyph_patchcore(
         img_size: Input image size for the CNN.
         max_patches_per_class: Maximum patches in memory bank per class.
         k: Number of nearest neighbors.
-        score_mode: Score aggregation mode ("max" or "topk").
-        topk: Number of top distances to average when score_mode="topk".
+        score_mode: Score aggregation mode ("max", "topk", or "adaptive").
+        topk: Number of top distances to average when score_mode="topk"/"adaptive".
         p_thr: Quantile for threshold computation from OK score distribution.
         min_per_class: Minimum images per class to train.
         progress_cb: Optional callback(progress_pct, message).
+        feature_layers: Feature extraction mode:
+            - "layer2" (default): ResNet18 layer2 only (128-dim, 8x8 for 128 input)
+            - "multi": layer1+layer2 concatenated (192-dim, 16x16 for 128 input)
+              Gives 4x more patches for better small-defect detection.
+        clahe_clip: CLAHE clipLimit for local contrast enhancement (0 = disabled).
+            Recommended 1.0-3.0 for small-defect enhancement.
 
     Returns:
         Training report dict.
@@ -781,7 +881,7 @@ def train_glyph_patchcore(
     out_path.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if _torch.cuda.is_available() else "cpu"
-    net = ResNetFeatGlyph().to(device).eval()
+    net = ResNetFeatGlyph(feature_layers=feature_layers).to(device).eval()
 
     class_dirs = [p for p in bank_path.iterdir() if p.is_dir()]
     if not class_dirs:
@@ -793,6 +893,8 @@ def train_glyph_patchcore(
         "topk": topk,
         "k": k,
         "p_thr": p_thr,
+        "feature_layers": feature_layers,
+        "clahe_clip": clahe_clip,
         "classes": [],
     }
 
@@ -817,7 +919,9 @@ def train_glyph_patchcore(
             g = imread_any_gray(p)
             if g is None:
                 continue
-            x = preprocess_gray_to_tensor(g, size=img_size).to(device)
+            x = preprocess_gray_to_tensor(
+                g, size=img_size, clahe_clip=clahe_clip,
+            ).to(device)
             with _torch.no_grad():
                 fmap = net(x)
                 emb = extract_patch_embeddings_batch(fmap)
@@ -843,11 +947,7 @@ def train_glyph_patchcore(
         for emb_np in all_patches:
             d_arr, _ = nn_model.kneighbors(emb_np)
             d_mean = d_arr.mean(axis=1)
-            if score_mode == "max":
-                s = float(d_mean.max())
-            else:
-                tk = min(topk, d_mean.shape[0])
-                s = float(np.mean(np.sort(d_mean)[-tk:]))
+            s = _compute_ok_score(d_mean, score_mode, topk)
             ok_scores.append(s)
 
         thr = float(np.quantile(ok_scores, p_thr))
@@ -861,6 +961,8 @@ def train_glyph_patchcore(
             "p_thr": float(p_thr),
             "thr": thr,
             "memory_bank": X,
+            "feature_layers": feature_layers,
+            "clahe_clip": float(clahe_clip),
         }
         joblib.dump(model_data, out_path / f"{cls}.joblib")
 
