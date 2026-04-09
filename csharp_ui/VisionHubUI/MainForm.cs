@@ -1753,7 +1753,23 @@ public partial class MainForm : Form
 
             var pythonServiceDir = Path.Combine(rootDir, "python_service");
             var venvPython = Path.Combine(pythonServiceDir, ".venv", "Scripts", "python.exe");
-            var configPath = Path.Combine(rootDir, "service", "service_config.yaml");
+
+            // Search for config file in common locations
+            string? configPath = null;
+            var configCandidates = new[]
+            {
+                Path.Combine(rootDir, "service", "service_config.yaml"),
+                Path.Combine(rootDir, "config_templates", "service_config.yaml"),
+                Path.Combine(pythonServiceDir, "service_config.yaml"),
+            };
+            foreach (var candidate in configCandidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    configPath = candidate;
+                    break;
+                }
+            }
 
             // Check if venv exists
             if (!File.Exists(venvPython))
@@ -1779,7 +1795,7 @@ public partial class MainForm : Form
             };
 
             // Set config path environment variable
-            if (File.Exists(configPath))
+            if (configPath != null)
             {
                 psi.Environment["VISIONHUB_CONFIG"] = configPath;
             }
@@ -1795,14 +1811,13 @@ public partial class MainForm : Form
 
     private static string? FindVisionHubRoot(string startDir)
     {
-        // Walk up directory tree looking for a folder that contains both
-        // "python_service" and "service" subdirectories.
+        // Walk up directory tree looking for a folder that contains
+        // "python_service" subdirectory (the only required marker).
         var dir = new DirectoryInfo(startDir);
-        for (int i = 0; i < 6 && dir != null; i++)
+        for (int i = 0; i < 8 && dir != null; i++)
         {
             var pythonService = Path.Combine(dir.FullName, "python_service");
-            var serviceDir = Path.Combine(dir.FullName, "service");
-            if (Directory.Exists(pythonService) && Directory.Exists(serviceDir))
+            if (Directory.Exists(pythonService))
             {
                 return dir.FullName;
             }
