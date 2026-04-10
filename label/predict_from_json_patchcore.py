@@ -99,6 +99,13 @@ def score_patchcore(emb_np: np.ndarray, nn: NearestNeighbors, mode: str, topk: i
     d = d.mean(axis=1)              # [N]
     if mode == "max":
         return float(d.max())
+    if mode == "relative":
+        # Subtract median to remove global shift from thickness/size variations;
+        # only local outliers (broken/missing lines) contribute to the score.
+        median_d = float(np.median(d))
+        residuals = d - median_d
+        topk = min(topk, residuals.shape[0])
+        return float(np.mean(np.sort(residuals)[-topk:]))
     topk = min(topk, d.shape[0])
     topk_mean = float(np.mean(np.sort(d)[-topk:]))
     if mode == "adaptive":

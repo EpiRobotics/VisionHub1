@@ -310,6 +310,7 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             progress_cb=progress_cb,
             feature_layers=str(train_cfg.get("feature_layers", "layer2")),
             clahe_clip=float(train_cfg.get("clahe_clip", 0.0)),
+            morph_aug=bool(train_cfg.get("morph_aug", False)),
         )
 
         # --- Step 3: Save meta.json ---
@@ -330,6 +331,7 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
                 "pad": pad,
                 "feature_layers": str(train_cfg.get("feature_layers", "layer2")),
                 "clahe_clip": float(train_cfg.get("clahe_clip", 0.0)),
+                "morph_aug": bool(train_cfg.get("morph_aug", False)),
             },
         }
         with open(out_path / "meta.json", "w", encoding="utf-8") as f:

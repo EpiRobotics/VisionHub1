@@ -79,6 +79,36 @@ class ResNetFeat(nn.Module):
         )
         return torch.cat([feat1, feat2_up], dim=1)
 
+def morph_augment_gray(gray):
+    """Generate morphological augmentations (erosion/dilation/scale) of a grayscale glyph.
+    Makes memory bank robust to normal font thickness/size variations."""
+    h, w = gray.shape[:2]
+    augmented = []
+    # Erosion (thinner strokes)
+    for ksize in (2, 3):
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        augmented.append(cv2.erode(gray, kern, iterations=1))
+    # Dilation (thicker strokes)
+    for ksize in (2, 3):
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        augmented.append(cv2.dilate(gray, kern, iterations=1))
+    # Scale variants (size changes)
+    for scale in (0.90, 0.95, 1.05, 1.10):
+        new_h, new_w = int(h * scale), int(w * scale)
+        if new_h < 4 or new_w < 4:
+            continue
+        scaled = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        canvas = np.full((h, w), gray.mean(), dtype=np.uint8)
+        sy = max(0, (h - new_h) // 2)
+        sx = max(0, (w - new_w) // 2)
+        cy = max(0, (new_h - h) // 2)
+        cx = max(0, (new_w - w) // 2)
+        ph = min(new_h - cy, h - sy)
+        pw = min(new_w - cx, w - sx)
+        canvas[sy:sy + ph, sx:sx + pw] = scaled[cy:cy + ph, cx:cx + pw]
+        augmented.append(canvas)
+    return augmented
+
 def preprocess(gray, size=128, clahe_clip=0.0):
     # 小图必须放大
     g = cv2.resize(gray, (size,size), interpolation=cv2.INTER_CUBIC)
@@ -110,15 +140,17 @@ def main():
     ap.add_argument("--max_patches_per_class", type=int, default=30000,
                     help="memory bank 最大patch数（超出会随机采样）")
     ap.add_argument("--k", type=int, default=1)
-    ap.add_argument("--score_mode", choices=["max", "topk", "adaptive"], default="topk",
-                    help="字符分数聚合方式：max, topk平均, 或 adaptive(几何均值)")
-    ap.add_argument("--topk", type=int, default=10, help="score_mode=topk/adaptive 时取最大的 topk 距离均值")
+    ap.add_argument("--score_mode", choices=["max", "topk", "adaptive", "relative"], default="topk",
+                    help="字符分数聚合方式：max, topk平均, adaptive(几何均值), relative(中位数归一化,抗粗细变化)")
+    ap.add_argument("--topk", type=int, default=10, help="score_mode=topk/adaptive/relative 时取最大的 topk 距离均值")
     ap.add_argument("--p_thr", type=float, default=0.995, help="阈值分位数（OK分布）")
     ap.add_argument("--min_per_class", type=int, default=10)
     ap.add_argument("--feature_layers", choices=["layer2", "multi"], default="layer2",
                     help="layer2=原始(8x8 patches), multi=layer1+layer2(16x16 patches, 更适合小缺陷)")
     ap.add_argument("--clahe_clip", type=float, default=0.0,
                     help="CLAHE局部对比度增强 (0=关闭, 推荐1.0-3.0)")
+    ap.add_argument("--morph_aug", action="store_true",
+                    help="启用形态学增强训练(腐蚀/膨胀/缩放)，让memory bank覆盖正常粗细和大小变化")
     args = ap.parse_args()
 
     bank_dir = Path(args.bank_dir)
@@ -144,7 +176,8 @@ def main():
             print(f"[WARN] skip {cls}: {len(imgs)} < {args.min_per_class}")
             continue
 
-        all_patches = []
+        all_patches = []   # original only (for threshold)
+        aug_patches = []   # augmented (for memory bank only)
         for p in tqdm(imgs, desc=f"Extract {cls}", leave=False):
             g = imread_any_gray(p)
             if g is None:
@@ -155,10 +188,20 @@ def main():
                 emb = extract_patch_embeddings(fmap).cpu().numpy().astype(np.float32)  # [N,C]
             all_patches.append(emb)
 
+            # Morphological augmentation
+            if args.morph_aug:
+                for ag in morph_augment_gray(g):
+                    ax = preprocess(ag, size=args.img_size, clahe_clip=args.clahe_clip).to(device)
+                    with torch.no_grad():
+                        afmap = net(ax)
+                        aemb = extract_patch_embeddings(afmap).cpu().numpy().astype(np.float32)
+                    aug_patches.append(aemb)
+
         if not all_patches:
             continue
 
-        X = np.vstack(all_patches)  # [N_total, C]
+        bank_patches = all_patches + aug_patches
+        X = np.vstack(bank_patches)  # [N_total, C]
 
         # 采样压缩 memory bank
         if X.shape[0] > args.max_patches_per_class:
@@ -177,6 +220,11 @@ def main():
             d = d.mean(axis=1)         # [Npatch]
             if args.score_mode == "max":
                 s = float(d.max())
+            elif args.score_mode == "relative":
+                median_d = float(np.median(d))
+                residuals = d - median_d
+                topk = min(args.topk, residuals.shape[0])
+                s = float(np.mean(np.sort(residuals)[-topk:]))
             else:
                 topk = min(args.topk, d.shape[0])
                 topk_mean = float(np.mean(np.sort(d)[-topk:]))
@@ -200,6 +248,7 @@ def main():
             "memory_bank": X,          # 存 embedding（float32）
             "feature_layers": args.feature_layers,
             "clahe_clip": args.clahe_clip,
+            "morph_aug": args.morph_aug,
         }
         joblib.dump(model, out_dir / f"{cls}.joblib")
         index["classes"].append({"cls": cls, "thr": thr, "n_ok": len(imgs), "n_patches": int(X.shape[0])})

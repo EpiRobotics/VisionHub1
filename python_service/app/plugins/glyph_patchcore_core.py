@@ -208,6 +208,55 @@ def _get_glyph_transform() -> Any:
     return _glyph_tf
 
 
+def morph_augment_gray(
+    gray: np.ndarray,
+    rng: np.random.RandomState | None = None,
+) -> list[np.ndarray]:
+    """Generate morphological augmentations of a grayscale glyph image.
+
+    Creates variants with different stroke widths and slight size changes
+    to make the memory bank robust to normal font thickness/size variations.
+    This way, during inference, thickness/size changes produce low distances
+    while structural defects (broken/missing lines) still produce high distances.
+
+    Returns a list of augmented grayscale images (does NOT include original).
+    """
+    if rng is None:
+        rng = np.random.RandomState()
+
+    h, w = gray.shape[:2]
+    augmented: list[np.ndarray] = []
+
+    # --- Erosion variants (simulate thinner strokes) ---
+    for ksize in (2, 3):
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        augmented.append(cv2.erode(gray, kern, iterations=1))
+
+    # --- Dilation variants (simulate thicker strokes) ---
+    for ksize in (2, 3):
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        augmented.append(cv2.dilate(gray, kern, iterations=1))
+
+    # --- Scale variants (simulate size changes) ---
+    for scale in (0.90, 0.95, 1.05, 1.10):
+        new_h, new_w = int(h * scale), int(w * scale)
+        if new_h < 4 or new_w < 4:
+            continue
+        scaled = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        # Center-crop or pad back to original size
+        canvas = np.full((h, w), gray.mean(), dtype=np.uint8)
+        sy = max(0, (h - new_h) // 2)
+        sx = max(0, (w - new_w) // 2)
+        cy = max(0, (new_h - h) // 2)
+        cx = max(0, (new_w - w) // 2)
+        ph = min(new_h - cy, h - sy)
+        pw = min(new_w - cx, w - sx)
+        canvas[sy:sy + ph, sx:sx + pw] = scaled[cy:cy + ph, cx:cx + pw]
+        augmented.append(canvas)
+
+    return augmented
+
+
 def preprocess_gray_to_tensor(
     gray: np.ndarray, size: int, clahe_clip: float = 0.0,
 ) -> Any:
@@ -295,12 +344,25 @@ def score_from_patch_distances(d_patch: Any, score_mode: str, topk: int) -> floa
               from the worst patch while retaining topk robustness.
               Especially effective for small defects where only 1-2
               patches are anomalous.
-        topk: number of top distances to average (for "topk" and "adaptive")
+            - "relative": subtract median distance then score on top-k of
+              the residuals. This makes the score invariant to global
+              appearance shifts (e.g. font thickness/size changes that
+              affect all patches equally) while remaining sensitive to
+              local structural defects (broken/missing lines) that only
+              affect a few patches.
+        topk: number of top distances to average (for "topk", "adaptive", "relative")
     """
     _ensure_torch()
     assert _torch is not None
     if score_mode == "max":
         return float(d_patch.max().item())
+    if score_mode == "relative":
+        # Subtract median to remove global shift from thickness/size variations
+        median_d = float(d_patch.median().item())
+        residuals = d_patch - median_d
+        topk = max(1, min(int(topk), residuals.numel()))
+        v = _torch.topk(residuals, k=topk, largest=True).values
+        return float(v.mean().item())
     topk = max(1, min(int(topk), d_patch.numel()))
     v = _torch.topk(d_patch, k=topk, largest=True).values
     topk_mean = float(v.mean().item())
@@ -825,6 +887,11 @@ def _compute_ok_score(d_mean: np.ndarray, score_mode: str, topk: int) -> float:
     """
     if score_mode == "max":
         return float(d_mean.max())
+    if score_mode == "relative":
+        median_d = float(np.median(d_mean))
+        residuals = d_mean - median_d
+        tk = min(topk, residuals.shape[0])
+        return float(np.mean(np.sort(residuals)[-tk:]))
     tk = min(topk, d_mean.shape[0])
     topk_mean = float(np.mean(np.sort(d_mean)[-tk:]))
     if score_mode == "adaptive":
@@ -846,6 +913,7 @@ def train_glyph_patchcore(
     progress_cb: Any = None,
     feature_layers: str = "layer2",
     clahe_clip: float = 0.0,
+    morph_aug: bool = False,
 ) -> dict[str, Any]:
     """Train PatchCore models for each glyph class.
 
@@ -855,8 +923,8 @@ def train_glyph_patchcore(
         img_size: Input image size for the CNN.
         max_patches_per_class: Maximum patches in memory bank per class.
         k: Number of nearest neighbors.
-        score_mode: Score aggregation mode ("max", "topk", or "adaptive").
-        topk: Number of top distances to average when score_mode="topk"/"adaptive".
+        score_mode: Score aggregation mode ("max", "topk", "adaptive", or "relative").
+        topk: Number of top distances to average.
         p_thr: Quantile for threshold computation from OK score distribution.
         min_per_class: Minimum images per class to train.
         progress_cb: Optional callback(progress_pct, message).
@@ -866,6 +934,13 @@ def train_glyph_patchcore(
               Gives 4x more patches for better small-defect detection.
         clahe_clip: CLAHE clipLimit for local contrast enhancement (0 = disabled).
             Recommended 1.0-3.0 for small-defect enhancement.
+        morph_aug: Enable morphological augmentation during training.
+            When True, each OK training image is augmented with erosion,
+            dilation, and scaling variants (8 extra per image) to make the
+            memory bank robust to normal font thickness/size variations.
+            This prevents false positives from slightly thicker/thinner/
+            larger/smaller characters while maintaining sensitivity to
+            structural defects (broken/missing lines).
 
     Returns:
         Training report dict.
@@ -914,7 +989,8 @@ def train_glyph_patchcore(
             progress_cb(pct, f"Training class {cls} ({len(imgs)} images)...")
 
         # Extract patch embeddings
-        all_patches: list[np.ndarray] = []
+        all_patches: list[np.ndarray] = []   # original only (for threshold)
+        aug_patches: list[np.ndarray] = []   # augmented (for memory bank only)
         for p in imgs:
             g = imread_any_gray(p)
             if g is None:
@@ -928,10 +1004,25 @@ def train_glyph_patchcore(
                 emb_np = emb.squeeze(0).cpu().numpy().astype(np.float32)
             all_patches.append(emb_np)
 
+            # Morphological augmentation: add eroded/dilated/scaled variants
+            if morph_aug:
+                aug_imgs = morph_augment_gray(g)
+                for ag in aug_imgs:
+                    ax = preprocess_gray_to_tensor(
+                        ag, size=img_size, clahe_clip=clahe_clip,
+                    ).to(device)
+                    with _torch.no_grad():
+                        afmap = net(ax)
+                        aemb = extract_patch_embeddings_batch(afmap)
+                        aemb_np = aemb.squeeze(0).cpu().numpy().astype(np.float32)
+                    aug_patches.append(aemb_np)
+
         if not all_patches:
             continue
 
-        X = np.vstack(all_patches)
+        # Memory bank: original + augmented patches
+        bank_patches = all_patches + aug_patches
+        X = np.vstack(bank_patches)
 
         # Subsample if too large
         if X.shape[0] > max_patches_per_class:
@@ -963,6 +1054,7 @@ def train_glyph_patchcore(
             "memory_bank": X,
             "feature_layers": feature_layers,
             "clahe_clip": float(clahe_clip),
+            "morph_aug": bool(morph_aug),
         }
         joblib.dump(model_data, out_path / f"{cls}.joblib")
 

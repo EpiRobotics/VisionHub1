@@ -223,6 +223,14 @@ def score_from_patch_d(d_patch: torch.Tensor, score_mode: str, topk: int) -> flo
     # d_patch: [N] torch tensor on CPU/GPU
     if score_mode == "max":
         return float(d_patch.max().item())
+    if score_mode == "relative":
+        # Subtract median to remove global shift from thickness/size variations;
+        # only local outliers (broken/missing lines) contribute to the score.
+        median_d = float(d_patch.median().item())
+        residuals = d_patch - median_d
+        topk = max(1, min(int(topk), residuals.numel()))
+        v = torch.topk(residuals, k=topk, largest=True).values
+        return float(v.mean().item())
     topk = max(1, min(int(topk), d_patch.numel()))
     v = torch.topk(d_patch, k=topk, largest=True).values
     topk_mean = float(v.mean().item())
