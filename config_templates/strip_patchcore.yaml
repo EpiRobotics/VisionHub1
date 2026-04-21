@@ -1,0 +1,109 @@
+# VisionHub Project Configuration - PatchCore Strip (Iron Core Misalignment Detection)
+# Copy to DATA_ROOT/projects/<project_id>/project.yaml
+#
+# This project type detects misalignment in narrow groove structures (e.g., motor
+# iron core lamination grooves) using strip-based PatchCore anomaly detection.
+#
+# Key difference from patchcore_tiling_v1:
+# - Slices image into independent strips along the long axis
+# - Each strip gets its own anomaly score (not diluted by the full image)
+# - Any-strip-NG triggers overall NG
+# - Prevents small defects from being missed due to score dilution
+#
+# Training dataset structure:
+#   datasets/
+#     ok/                 # OK images only (no NG needed, unsupervised)
+
+project_id: iron_core_groove
+display_name: "Iron Core Groove - Misalignment Detection (Strip PatchCore)"
+enabled: true
+
+io:
+  tcp_port: 9201
+  bind_host: "0.0.0.0"
+  allow_ips: ["192.168.0.0/16", "127.0.0.1/32"]
+  output_dir: "${DATA_ROOT}/projects/iron_core_groove/runs"
+
+image:
+  file_ready:
+    mode: "size_stable"
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "patchcore_strip_v1"
+  model:
+    active: "${PROJECT_DIR}/active_model.json"
+  preprocess:
+    normalize: "imagenet"
+    align:
+      enabled: false
+  infer:
+    device: "cuda"
+
+    # --- Strip parameters ---
+    # The image is sliced into strips along the long axis.
+    # Each strip is independently scored by PatchCore.
+    strip:
+      strip_size: 256             # Size of each strip along the long axis (pixels)
+                                  # Tune this to cover ~5-10 lamination teeth
+      strip_overlap: 64           # Overlap between adjacent strips (pixels)
+                                  # Ensures defects at strip boundaries are not missed
+      strip_axis: "auto"          # "auto" / "vertical" / "horizontal"
+                                  # "auto" detects the long axis automatically
+      score_mode: "max"           # "max" / "quantile"
+                                  # "max": use max pixel value in strip as score
+                                  # "quantile": use quantile value (more robust to noise)
+      score_quantile: 0.999       # Only used when score_mode = "quantile"
+
+    # --- Tile parameters ---
+    # Each strip is resized to (tile_h, tile_w) for feature extraction.
+    tile:
+      tile_w: 512                 # Width to resize each strip to
+      tile_h: 352                 # Height to resize each strip to
+
+  postprocess:
+    decision:
+      # Any-strip-NG triggers overall NG.
+      # thr_global overrides the model's auto-computed threshold if set.
+      thr_global: null            # null = use threshold from model
+    export:
+      save_heatmap_png: false
+      save_u16: false
+      save_mask: false
+      save_overlay: false         # Use overlay_output_path for fast single-file overlay
+      heatmap_vmin: 0.0
+      heatmap_vmax_mode: "thr_scale"
+      heatmap_vmax: 1.0
+      heatmap_vmax_scale: 1.2
+      mask_thr_scale: 0.85
+      dilate_px: 10
+      close_px: 6
+      regions:
+        enabled: true
+        min_area_px: 80
+        max_regions: 10
+        output_format: "json"
+
+  # PatchCore Strip training parameters
+  _train:
+    backbone: "resnet18"          # resnet18 / resnet50
+    layers: "layer2,layer3"       # Feature layers to extract
+    proj_dim: 128                 # Random projection dim (0 = disabled)
+    max_patches_per_strip: 256    # Patches sampled per strip for memory bank
+    memory_size: 20000            # Final memory bank size
+    batch_size: 16                # Training batch size
+    num_workers: 2                # Data loader workers
+    use_faiss: true               # Use faiss for kNN (faster)
+    compute_threshold: true       # Auto-compute threshold from OK strip scores
+    ok_quantile: 0.999            # Quantile of OK max-strip-scores
+    thr_scale: 1.10               # Scale factor on quantile for threshold

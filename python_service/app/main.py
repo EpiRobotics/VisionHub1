@@ -22,8 +22,12 @@ import uvicorn
 
 # Ensure plugins are registered at import time
 import app.plugins.glyph_patchcore_plugin  # noqa: F401
+import app.plugins.panel_seg_plugin  # noqa: F401
 import app.plugins.patchcore_plugin  # noqa: F401
+import app.plugins.patchcore_strip_plugin  # noqa: F401
+import app.plugins.projection_compare_plugin  # noqa: F401
 import app.plugins.resnet_classify_plugin  # noqa: F401
+import app.plugins.siamese_compare_plugin  # noqa: F401
 from app.config import ServiceConfig, load_service_config
 from app.http_api import create_api
 from app.project_manager import ProjectManager
@@ -258,8 +262,11 @@ class ServiceApp:
         timing.save = plugin_timing.get("save", 0.0)
         timing.read = plugin_timing.get("read", 0.0)
         timing.total = round((time.perf_counter() - t_total_start) * 1000, 2)
+        # Forward per-step detail from core algorithm (e.g. imread, build_metal_score, ...)
+        skip_keys = {"infer", "post", "save", "read"}
+        timing.detail = {k: round(v, 2) for k, v in plugin_timing.items() if k not in skip_keys}
 
-        return {
+        resp: dict[str, Any] = {
             "job_id": job.job_id,
             "project_id": project_id,
             "ok": plugin_result.get("pred", "OK") == "OK",
@@ -272,6 +279,10 @@ class ServiceApp:
             "model_version": plugin_result.get("model_version", ""),
             "error": None,
         }
+        # Forward optional residual summary (metal_mask metric)
+        if "residual_summary" in plugin_result:
+            resp["residual_summary"] = plugin_result["residual_summary"]
+        return resp
 
     async def _get_project_status(self, project_id: str) -> dict[str, Any]:
         """Get project status for TCP STATUS command."""

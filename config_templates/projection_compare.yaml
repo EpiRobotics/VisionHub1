@@ -1,0 +1,287 @@
+# =============================================================================
+# Projection Compare V1 - Column-Projection Adjacent-Strip Comparison
+# =============================================================================
+#
+# Detects alignment deviations in periodic structures (e.g., motor iron core
+# lamination grooves) by comparing 1-D brightness profiles of adjacent strips.
+#
+# No neural network required — pure signal processing.  Fast and lightweight.
+#
+# Key idea:
+#   Each strip is averaged perpendicular to the slicing axis to produce a 1-D
+#   brightness curve.  Peaks and valleys in this curve correspond to groove
+#   edges.  When a lamination is misaligned, its peaks shift relative to
+#   neighbours → large distance between adjacent curves → NG.
+#
+# Training: only OK samples needed (unsupervised).
+# Inference: slices image → column projection per strip → compares adjacent
+#            profiles → any pair with high distance → NG.
+#
+# Usage:
+#   1. Place OK images in datasets/ok/
+#   2. Adjust strip_size to cover ~1 tooth width
+#   3. Train via HTTP API or UI
+#   4. Inference returns per-pair distances and overall OK/NG
+#
+# =============================================================================
+
+project_id: "my_projection_project"
+display_name: "Projection Compare Project"
+enabled: true
+
+io:
+  tcp_port: 9100
+  bind_host: "0.0.0.0"
+  allow_ips: ["127.0.0.1/32"]
+  output_dir: "${PROJECT_DIR}/output"
+  overlay_output_path: ""
+
+image:
+  file_ready:
+    mode: "size_stable"
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "projection_compare_v1"
+
+  infer:
+    device: "cuda"                    # Not actually used (no GPU needed), kept for compatibility
+
+    # --- Strip parameters ---
+    # Controls how the image is sliced into tooth-sized strips.
+    strip:
+      strip_size: 100               # Size of each strip along the long axis (pixels)
+                                    # Tune this to cover approximately one tooth width
+      strip_overlap: 50             # Overlap between adjacent strips (pixels)
+                                    # Ensures boundary regions are well captured
+      strip_axis: "auto"            # "auto" / "vertical" / "horizontal"
+                                    # "auto" detects the long axis automatically
+
+  # --- Training parameters ---
+  _train:
+    metric: "metal_mask"             # Distance metric between adjacent profiles:
+                                    #   "l2": RMS difference of normalised profiles (recommended)
+                                    #   "correlation": 1 - Pearson correlation
+                                    #   "peak_shift": cross-correlation peak offset (pixels)
+                                    #   "edge_shift": max groove-edge position shift (pixels)
+                                    #   "boundary": V2 left-boundary mode — detects left groove
+                                    #     edge xL(y) via slot_score region approach, fits smooth
+                                    #     reference, scores by residual dL.  Score = pixels of
+                                    #     geometric deviation.  Colour-immune by design.
+                                    #     Outputs bump_score (protrusion/recession) and
+                                    #     skew_score (angular tilt) separately.
+                                    #     Right boundary not used (unreliable on heat-treated parts).
+                                    #   "metal_mask": V3 metal-mask boundary detection — direction-
+                                    #     sensitive metal score + adaptive hysteresis thresholds
+                                    #     + auto pitch estimation + tooth phase template.
+                                    #     Extracts inner boundaries on BOTH sides (left+right),
+                                    #     detects intrusion / missing-metal events.  No strips.
+                                    #     Score = max event peak (pixels).  Pure geometry.
+                                    #     Configure via metal_mask: sub-section below.
+    smooth_kernel: 5                # Smoothing kernel size (odd integer, 0 = no smoothing)
+                                    # Smooths out noise in the projection curve
+                                    # Increase if profiles are noisy; decrease for sharper edges
+    smooth_type: "gaussian"         # "gaussian" (recommended) or "boxcar"
+                                    # Gaussian produces smoother profiles with fewer artifacts
+    trim_pct: 0.05                  # Trimmed mean: discard brightest/darkest N% of pixels
+                                    # before averaging.  Robust to reflections and dark spots.
+                                    # 0 = plain mean, 0.05 = discard top/bottom 5%
+    align_max_shift: 0              # Pre-align adjacent profiles via cross-correlation
+                                    # before computing distance.  Compensates for small
+                                    # normal positional jitter between strips.
+                                    # 0 = disabled, 3-5 = recommended
+                                    # WARNING: may mask real defects if set too high
+    skip_edge_strips: 0             # Skip first/last N strips to avoid boundary artifacts
+                                    # 0 = use all strips, 1-2 = skip edges
+    projection_type: "texture"      # Projection mode:
+                                    #   "mean": average brightness (original, simple)
+                                    #   "gradient": Sobel edge-magnitude average
+                                    #   "binary_edge": binarise then gradient (needs dark groove)
+                                    #   "texture": local-std-dev texture map, then gradient.
+                                    #     Teeth = high texture (rough metal), groove = low
+                                    #     texture (smooth).  Immune to colour AND shadows.
+                                    #     RECOMMENDED for heat-treated iron cores.
+    binary_threshold: 50            # Grayscale threshold for binary_edge mode only.
+                                    #   Pixels with gray <= threshold → 0 (groove/dark)
+                                    #   Pixels with gray >  threshold → 1 (metal)
+                                    #   Set to 0 for automatic Otsu threshold.
+                                    #   Not used by "texture" mode.
+    n_segments: 1                   # V1.5 sub-segment splitting for skew detection.
+                                    #   1 = V1 behaviour (single full-strip profile)
+                                    #   2 = split each strip into top/bottom halves;
+                                    #       pair distance = max(d_top, d_bot)
+                                    #       skew_score = |d_top - d_bot|
+                                    #   Detects angular tilt that V1 would average away.
+                                    #   3 = three sub-segments (more granular, noisier).
+                                    #   Recommended: 2 for skew detection with strip_size >= 40.
+    edge_band_width: 0              # V1.5 edge-band weighting (pixels).
+                                    #   0 = disabled (uniform weighting, V1 behaviour)
+                                    #   >0 = auto-detect groove edge positions from gradient
+                                    #     peaks, then weight edge regions (±N pixels) at 1.0
+                                    #     and suppress interior/groove-centre to 0.1.
+                                    #   Suppresses heat-treatment colour false positives.
+                                    #   Recommended: 8 for typical groove images.
+    row_normalize: false            # V1.5 per-row median/MAD normalisation.
+                                    #   false = disabled (V1 behaviour)
+                                    #   true  = normalise each row before projection.
+                                    #     Removes slow colour / brightness drift along
+                                    #     strip height (heat-treatment bands, uneven
+                                    #     illumination).  Further suppresses colour-based
+                                    #     false positives.
+                                    #   Recommended: true when colour variation is an issue.
+
+    # --- V2 Boundary-trace parameters (only used when metric: "boundary") ---
+    # Left-boundary only — detects groove left edge via slot_score region
+    # approach.  Right boundary not used (unreliable on heat-treated images).
+    # Score = pixels of left-boundary deviation.  Colour-immune by design.
+    boundary_block_h: 8             # Y-block height for boundary averaging (pixels).
+                                    #   Smaller = finer resolution, noisier.  8 recommended.
+    boundary_slot_thr: 0.55         # Slot-score threshold for boundary crossing.
+                                    #   slot_score = 0.7*dark + 0.3*texture.
+                                    #   Pixels with slot_score >= thr = groove interior.
+                                    #   Scan from centre leftward; first pixel below thr = boundary.
+                                    #   0.50–0.60 recommended.  Lower = more conservative
+                                    #   (boundary shifts outward).
+    boundary_envelope_win: 9        # Sliding-max window for tooth-tip envelope extraction.
+                                    #   Extracts the tooth tips (closest to groove centre)
+                                    #   from the raw boundary curve.  Must be odd.
+                                    #   Larger = smoother envelope, may miss narrow bumps.
+                                    #   7–11 recommended.
+    boundary_ref_deg: 3             # Polynomial degree for reference curve fitting (IRLS).
+                                    #   1 = linear (only overall tilt), 2 = quadratic,
+                                    #   3 = cubic (recommended).  Higher = more flexible
+                                    #   reference, but risks absorbing real defects.
+    boundary_skew_weight: 2.0       # Multiplier for skew_score in combined score.
+                                    #   total_score = max(bump_score, skew_score * weight).
+                                    #   Increase to make skew detection more sensitive.
+                                    #   1.0–3.0 recommended.
+
+    # --- V3 Metal-mask parameters (only used when metric: "metal_mask") ---
+    # Direction-sensitive metal score + adaptive hysteresis thresholds +
+    # pitch-scaled windows + tooth phase template for scoring.
+    # Score = max event peak_px.  Pure geometry, no strips.
+    metal_mask:
+      # Preprocessing
+      blur_ksize: 3                 # Gaussian blur kernel size
+      blur_sigma: 0.6               # Gaussian blur sigma
+
+      # Directional metal score weights
+      # score = w_std*std + w_lap*lap + w_gy*|Gy| - w_penalty*max(0,|Gx|-|Gy|)
+      w_std: 0.42                   # Weight for local_std feature
+      w_lap: 0.33                   # Weight for |Laplacian| feature
+      w_gy: 0.25                    # Weight for |Sobel_y| feature
+      w_penalty: 0.18               # Penalty for vertical reflection stripes
+
+      # Adaptive threshold sampling (per-side hysteresis)
+      seed_border_w_ratio: 0.03     # Border seed width as fraction of image width
+      groove_w_ratio: 0.10          # Groove center sampling width ratio
+      left_alpha_hi: 0.35           # Left side high threshold interpolation
+      left_alpha_lo: 0.25           # Left side low threshold interpolation
+      right_alpha_hi: 0.62          # Right side high threshold interpolation
+      right_alpha_lo: 0.40          # Right side low threshold interpolation
+
+      # Pitch estimation
+      pitch_min: 25                 # Minimum expected tooth pitch (pixels)
+      pitch_max: 70                 # Maximum expected tooth pitch (pixels)
+
+      # Morphology (scaled by estimated pitch P)
+      morph_close_h_ratio: 0.25     # Close kernel height = 0.25 * P
+      morph_open_h_ratio: 0.08      # Open kernel height = 0.08 * P
+
+      # Boundary smoothing (scaled by pitch P)
+      boundary_median_ratio: 0.12   # Median filter window = 0.12 * P
+      boundary_sg_ratio: 0.80       # Savitzky-Golay window = 0.80 * P
+
+      # Low-frequency trend reference
+      ref_trend_ratio: 3.0          # Trend window = 3.0 * P
+
+      # Tooth template for scoring ONLY (removes normal periodic waviness)
+      template_smooth: 7            # Template circular smoothing window
+      template_rows_start_frac: 0.35  # Use lower 65% rows for template
+      template_dev_sigma: 2.5       # Only inlier residuals contribute
+
+      # Event extraction (sigma-based adaptive threshold)
+      event_sigma_mult: 3.0         # Threshold = max(event_min_px, sigma_mult * MAD_sigma)
+      event_min_px: 2.0             # Minimum absolute threshold (pixels)
+      min_run_ratio: 0.25           # Minimum run length = 0.25 * P
+      gap_merge_ratio: 0.10         # Gap merge distance = 0.10 * P
+
+      # NG / WARN scoring thresholds (heights as ratios of pitch)
+      ng_peak_thr: 4.0              # Peak residual >= this AND height >= ng_height_ratio*P => NG
+      ng_height_ratio: 0.30         # Min height ratio for peak-based NG
+      ng_area_thr: 35.0             # Area >= this AND height >= ng_area_height_ratio*P => NG
+      ng_area_height_ratio: 0.25    # Min height ratio for area-based NG
+      warn_peak_thr: 2.5            # Peak residual >= this AND height >= warn_height_ratio*P => WARN
+      warn_height_ratio: 0.20       # Min height ratio for WARN
+
+      # Per-side ignore zones (fraction of image height to skip at top)
+      # Useful when top/bottom of image has unreliable metal texture
+      ignore_top_left: 0.0          # 0 = full height detection on left side
+      ignore_top_right: 0.20        # Skip top 20% on right side (suppress paint reflection FP)
+
+      # Right-side event type filter
+      ignore_missing_right: true    # true = right side only detects intrude (toward groove),
+                                    #   skips missing_metal (away from groove).
+                                    #   Useful when right metal edge is unreliable for
+                                    #   recession detection due to dark texture.
+
+      # Dipole scoring — detect paired protrusion+recession on same tooth
+      # A real defect (bent metal) shows both a bump and a dip within one tooth.
+      # Score = amp_weight * min(A_pos, A_neg) + area_weight * min(S_pos, S_neg) / win_rows
+      # Area is normalised by window length so long-but-small offsets don't dominate.
+      dipole_enabled: true          # true = use dipole as primary score (recommended)
+      dipole_amp_weight: 1.0        # weight for amplitude (peak displacement pixels).
+                                    #   Increase to make score more sensitive to large offsets.
+                                    #   2.0 recommended for misalignment detection.
+      dipole_area_weight: 0.03      # weight for area term (normalised by window length).
+                                    #   1.0 recommended with new normalised formula.
+      dipole_dist_ratio: 0.6        # max distance between +/- peaks (fraction of pitch)
+      dipole_ng_thr: 5.5            # dipole score >= this => NG
+      dipole_warn_thr: 4.0          # dipole score >= this => WARN
+
+      # Adjacent tooth-peak residual — simplest pixel-shift metric.
+      # Fits a straight line through all tooth peaks, measures per-peak
+      # residual (deviation from line).  max |residual| > threshold => NG.
+      # When enabled, overrides dipole scoring for judgment.
+      adj_diff_enabled: false        # true = use residual as primary score
+      adj_diff_ng_thr: 5.0           # max residual (px) >= this => NG
+      adj_diff_warn_thr: 3.0         # max residual (px) >= this => WARN
+      adj_diff_overlay: true          # draw fitted line + residual labels on overlay
+                                      # set false to save inference time
+      right_fit_offset: 160           # right fitted line = left fitted line + offset (px)
+                                      # Left side fits a straight line through tooth peaks.
+                                      # Right side reuses that same line shifted by this value.
+                                      # Avoids right-side outliers corrupting the fit.
+      area_depth_thr: 15              # only count area where |residual| > this (px)
+                                      # Filters out shallow waviness; only deep excursions count.
+
+    # --- Threshold computation ---
+    ok_quantile: 0.999              # Quantile of OK distance distribution
+    thr_scale: 1.5                  # threshold = quantile * thr_scale
+                                    # Increase for fewer false alarms
+                                    # Decrease for higher sensitivity
+
+  postprocess:
+    decision:
+      score_method: "max_pair_distance"
+      threshold: "from_model"
+      thr_global: null              # Runtime threshold override (set via HTTP API)
+    export:
+      save_overlay: false           # Save per-job overlay image
+      save_heatmap_png: false       # Not applicable
+      save_u16: false               # Not applicable
+      save_mask: false              # Not applicable
+      regions:
+        enabled: true               # Extract NG pair regions
+        min_area_px: 80
+        max_regions: 10

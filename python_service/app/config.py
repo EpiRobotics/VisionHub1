@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Service-level config
@@ -38,6 +38,8 @@ class LoggingConfig(BaseModel):
 
 
 class ServiceConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     data_root: str = "E:\\AIInspect"
     gpu: GpuConfig = Field(default_factory=GpuConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
@@ -87,9 +89,18 @@ class TileConfig(BaseModel):
     stride_h: int = 352
 
 
+class StripConfig(BaseModel):
+    strip_size: int = 256
+    strip_overlap: int = 64
+    strip_axis: str = "auto"
+    score_mode: str = "max"
+    score_quantile: float = 0.999
+
+
 class InferConfig(BaseModel):
     device: str = "cuda"
     tile: TileConfig = Field(default_factory=TileConfig)
+    strip: StripConfig = Field(default_factory=StripConfig)
     batch_tiles: int = 8
 
 
@@ -144,6 +155,8 @@ class PipelineConfig(BaseModel):
 
 
 class ProjectConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     project_id: str
     display_name: str = ""
     enabled: bool = True

@@ -1,0 +1,111 @@
+# =============================================================================
+# Siamese Compare V1 - Adjacent-Tooth Contrastive Comparison
+# =============================================================================
+#
+# Detects alignment deviations in periodic structures (e.g., motor iron core
+# lamination grooves) by comparing adjacent tooth regions via a shared
+# Siamese embedding network.
+#
+# Training: only OK samples needed (unsupervised).
+# Inference: slices image → embeds each strip → compares adjacent pairs
+#            → any pair with high distance → NG.
+#
+# Usage:
+#   1. Place OK images in datasets/ok/
+#   2. Adjust strip_size to cover ~1 tooth width
+#   3. Train via HTTP API or UI
+#   4. Inference returns per-pair distances and overall OK/NG
+#
+# =============================================================================
+
+project_id: "my_siamese_project"
+display_name: "Siamese Compare Project"
+enabled: true
+
+io:
+  tcp_port: 9100
+  bind_host: "0.0.0.0"
+  allow_ips: ["127.0.0.1/32"]
+  output_dir: "${PROJECT_DIR}/output"
+  overlay_output_path: ""
+
+image:
+  file_ready:
+    mode: "size_stable"
+    stable_checks: 3
+    stable_interval_ms: 50
+    timeout_ms: 1500
+  color: "rgb"
+  rotate: 0
+  roi:
+    enabled: false
+    x: 0
+    y: 0
+    w: 0
+    h: 0
+
+pipeline:
+  algo: "siamese_compare_v1"
+
+  infer:
+    device: "cuda"
+
+    # --- Strip parameters ---
+    # Controls how the image is sliced into tooth-sized strips.
+    strip:
+      strip_size: 256             # Size of each strip along the long axis (pixels)
+                                  # Tune this to cover approximately one tooth width
+      strip_overlap: 64           # Overlap between adjacent strips (pixels)
+                                  # Ensures boundary regions are well captured
+      strip_axis: "auto"          # "auto" / "vertical" / "horizontal"
+                                  # "auto" detects the long axis automatically
+      score_mode: "max"           # Not used by Siamese (kept for compatibility)
+      score_quantile: 0.999       # Not used by Siamese (kept for compatibility)
+
+    # --- Tile parameters ---
+    # Each strip is resized to (tile_h, tile_w) for feature extraction.
+    tile:
+      tile_w: 224                 # Width to resize each strip for the backbone
+      tile_h: 224                 # Height to resize each strip for the backbone
+                                  # 224x224 is standard for ResNet input
+
+  # --- Training parameters ---
+  # These control model architecture and training behaviour.
+  _train:
+    backbone: "resnet18"          # "resnet18" or "resnet50"
+    layers: "layer2,layer3"       # Which backbone layers to extract features from
+    embed_dim: 256                # Embedding dimension for comparison
+                                  # Higher = more expressive but slower
+    metric: "l2"                  # Distance metric: "l2" or "cosine"
+                                  # "l2": Euclidean distance (recommended)
+                                  # "cosine": cosine distance (1 - cos_sim)
+
+    # --- Fine-tuning (optional) ---
+    # Set fine_tune_epochs > 0 to fine-tune with contrastive loss on OK pairs.
+    # This can improve sensitivity but requires more training time.
+    fine_tune_epochs: 0           # 0 = use pretrained features only (fast, recommended first)
+                                  # 5-20 = fine-tune with contrastive loss
+    fine_tune_lr: 0.0001          # Learning rate for fine-tuning
+    fine_tune_margin: 0.5         # Margin for contrastive loss
+
+    # --- Threshold computation ---
+    compute_threshold: true       # Auto-compute threshold from OK pair distances
+    ok_quantile: 0.999            # Quantile of OK distance distribution
+    thr_scale: 1.2                # threshold = quantile * thr_scale
+                                  # Increase for fewer false alarms
+                                  # Decrease for higher sensitivity
+
+  postprocess:
+    decision:
+      score_method: "max_pair_distance"
+      threshold: "from_model"
+      thr_global: null            # Runtime threshold override (set via HTTP API)
+    export:
+      save_overlay: false         # Save per-job overlay image
+      save_heatmap_png: false     # Not applicable for Siamese (no heatmap)
+      save_u16: false             # Not applicable for Siamese
+      save_mask: false            # Not applicable for Siamese
+      regions:
+        enabled: true             # Extract NG pair regions
+        min_area_px: 80
+        max_regions: 10

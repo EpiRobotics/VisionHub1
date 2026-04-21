@@ -55,6 +55,7 @@ class TimingInfo(BaseModel):
     post: float = 0.0
     save: float = 0.0
     total: float = 0.0
+    detail: dict[str, float] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,13 @@ class Artifacts(BaseModel):
 # InferResult - the unified result schema
 # ---------------------------------------------------------------------------
 
+class ResidualSummary(BaseModel):
+    L_max_pos_residual: float = 0.0
+    L_max_neg_residual: float = 0.0
+    R_max_pos_residual: float = 0.0
+    R_max_neg_residual: float = 0.0
+
+
 class InferResult(BaseModel):
     job_id: str
     project_id: str
@@ -83,6 +91,7 @@ class InferResult(BaseModel):
     artifacts: Artifacts = Field(default_factory=Artifacts)
     regions: list[Region] = Field(default_factory=list)
     model_version: str = ""
+    residual_summary: ResidualSummary | None = None
     error: ErrorInfo | None = None
 
     def to_json_line(self) -> str:
