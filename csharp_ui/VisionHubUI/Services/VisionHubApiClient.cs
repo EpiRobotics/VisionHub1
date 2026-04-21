@@ -361,8 +361,16 @@ public class VisionHubApiClient : IDisposable
     public async Task<LabelTrainStartResponse?> LabelStartTrainingAsync(
         string bankDir, string outputModelDir, string projectId = "",
         bool autoActivate = true, int imgSize = 128,
+        string algoMethod = "synthdefect",
         int maxPatchesPerClass = 30000, int k = 1,
-        string scoreMode = "topk", int topk = 10, double pThr = 0.995)
+        string scoreMode = "topk", int topk = 10, double pThr = 0.995,
+        bool multiScale = false, bool useClahe = false,
+        double claheClip = 3.0, int claheGrid = 4,
+        double scorePercentile = 99.0, double hybridAlpha = 0.5,
+        bool useEdge = false,
+        double essentialThr = 0.5, double structuralScorePercentile = 95.0,
+        int synthEpochs = 40, int synthBatchSize = 16,
+        double synthLr = 2e-3, string synthDevice = "auto")
     {
         try
         {
@@ -373,11 +381,25 @@ public class VisionHubApiClient : IDisposable
                 project_id = projectId,
                 auto_activate = autoActivate,
                 img_size = imgSize,
+                algo_method = algoMethod,
                 max_patches_per_class = maxPatchesPerClass,
                 k,
                 score_mode = scoreMode,
                 topk,
-                p_thr = pThr
+                p_thr = pThr,
+                multi_scale = multiScale,
+                use_clahe = useClahe,
+                clahe_clip = claheClip,
+                clahe_grid = claheGrid,
+                score_percentile = scorePercentile,
+                hybrid_alpha = hybridAlpha,
+                use_edge = useEdge,
+                essential_thr = essentialThr,
+                structural_score_percentile = structuralScorePercentile,
+                synth_epochs = synthEpochs,
+                synth_batch_size = synthBatchSize,
+                synth_lr = synthLr,
+                synth_device = synthDevice
             };
             var content = new StringContent(
                 JsonConvert.SerializeObject(payload),

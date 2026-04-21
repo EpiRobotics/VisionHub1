@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using VisionHubUI.Models;
 using VisionHubUI.Services;
 
@@ -19,9 +18,6 @@ public partial class MainForm : Form
     private System.Windows.Forms.Timer _refreshTimer;
     private List<ProjectInfo> _projects = new();
     private string? _selectedProjectId;
-
-    // Python backend process (auto-launched on startup, killed on close)
-    private Process? _backendProcess;
 
     // Per-project log state: project_id -> next_index for incremental fetch
     private readonly Dictionary<string, int> _logNextIndex = new();
@@ -55,7 +51,6 @@ public partial class MainForm : Form
         _apiClient = new VisionHubApiClient("http://localhost:8100");
         InitializeComponents();
         SetupTimers();
-        StartBackendProcess();
     }
 
     private void InitializeComponents()
@@ -737,12 +732,21 @@ public partial class MainForm : Form
                 if (result != null)
                 {
                     var timing = result.TimingMs;
-                    txtInferResult.Text =
+                    var text =
                         $"Pred: {result.Pred}    Score: {result.Score:F4}    Threshold: {result.Threshold:F4}\r\n" +
                         $"Timing: total={timing?.Total:F1}ms  infer={timing?.Infer:F1}ms  " +
                         $"post={timing?.Post:F1}ms  save={timing?.Save:F1}ms\r\n" +
                         $"Model: {result.ModelVersion}\r\n" +
                         $"Regions: {result.Regions?.Count ?? 0}";
+
+                    if (result.ResidualSummary != null)
+                    {
+                        var rs = result.ResidualSummary;
+                        text += $"\r\nResidual: L_pos={rs.LMaxPosResidual:+0.00;-0.00}  L_neg={rs.LMaxNegResidual:+0.00;-0.00}  " +
+                                $"R_pos={rs.RMaxPosResidual:+0.00;-0.00}  R_neg={rs.RMaxNegResidual:+0.00;-0.00}";
+                    }
+
+                    txtInferResult.Text = text;
 
                     if (result.Error != null)
                     {
@@ -898,7 +902,7 @@ public partial class MainForm : Form
 
         var txtThrGlobal2 = new TextBox
         {
-            PlaceholderText = "e.g. 0.8200",
+            PlaceholderText = "e.g. 2.50",
             Text = savedThrText,
             Location = new Point(leftMargin + 85, y),
             Size = new Size(120, 25),
@@ -951,7 +955,7 @@ public partial class MainForm : Form
             if (ok)
             {
                 lblThrResult2.Text = thrValue.HasValue
-                    ? $"Set to {thrValue.Value:F4} (saved to config)"
+                    ? $"Set to {thrValue.Value:F2} (saved to config)"
                     : "Using per-class thresholds (saved to config)";
                 lblThrResult2.ForeColor = Color.Green;
             }
@@ -1538,6 +1542,130 @@ public partial class MainForm : Form
         contentPanel.Controls.Add(txtPThr);
         y += 32;
 
+        // --- Algorithm Method Selection ---
+        var lblMethod = new Label
+        {
+            Text = "Algorithm Method:",
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            Location = new Point(leftMargin, y),
+            Size = new Size(150, 20)
+        };
+        contentPanel.Controls.Add(lblMethod);
+
+        var cmbAlgoMethod = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = new Point(leftMargin + 155, y - 2),
+            Size = new Size(180, 25),
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        cmbAlgoMethod.Items.AddRange(new object[] { "synthdefect", "structural", "patchcore" });
+        cmbAlgoMethod.SelectedIndex = 0;  // synthdefect by default (recommended)
+        contentPanel.Controls.Add(cmbAlgoMethod);
+
+        var lblMethodHint = new Label
+        {
+            Text = "synthdefect = U-Net w/ synthetic defects (recommended), structural = shape compare, patchcore = CNN",
+            Font = new Font("Segoe UI", 8, FontStyle.Italic),
+            ForeColor = Color.Gray,
+            Location = new Point(leftMargin + 345, y + 2),
+            Size = new Size(540, 18)
+        };
+        contentPanel.Controls.Add(lblMethodHint);
+        y += 28;
+
+        // --- Structural parameters panel ---
+        var pnlStructural = new Panel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 52),
+            Name = "pnlStructural"
+        };
+        int sy = 0;
+
+        var lblEssentialThr = new Label { Text = "essential_thr:", Location = new Point(0, sy), Size = new Size(88, 20), Font = new Font("Segoe UI", 9) };
+        var nudEssentialThr = new NumericUpDown { Minimum = 0.1m, Maximum = 0.9m, Value = 0.5m, DecimalPlaces = 2, Increment = 0.05m, Location = new Point(90, sy - 2), Size = new Size(60, 25) };
+        pnlStructural.Controls.Add(lblEssentialThr);
+        pnlStructural.Controls.Add(nudEssentialThr);
+
+        var lblStructPercentile = new Label { Text = "score_percentile:", Location = new Point(165, sy), Size = new Size(105, 20), Font = new Font("Segoe UI", 9) };
+        var nudStructPercentile = new NumericUpDown { Minimum = 80, Maximum = 100, Value = 95, DecimalPlaces = 1, Increment = 1m, Location = new Point(272, sy - 2), Size = new Size(55, 25) };
+        pnlStructural.Controls.Add(lblStructPercentile);
+        pnlStructural.Controls.Add(nudStructPercentile);
+        sy += 28;
+
+        var lblStructInfo = new Label
+        {
+            Text = "v3: Grayscale Z-score. High-sigma pixels (thickness variation) ignored, low-sigma pixels (missing strokes) flagged.",
+            Font = new Font("Segoe UI", 8, FontStyle.Italic),
+            ForeColor = Color.Gray,
+            Location = new Point(0, sy),
+            Size = new Size(contentWidth, 18)
+        };
+        pnlStructural.Controls.Add(lblStructInfo);
+
+        contentPanel.Controls.Add(pnlStructural);
+
+        // --- PatchCore parameters panel ---
+        var pnlPatchCore = new Panel
+        {
+            Location = new Point(leftMargin, y),
+            Size = new Size(contentWidth, 55),
+            Name = "pnlPatchCore",
+            Visible = false  // hidden by default since structural is selected
+        };
+        int pcY = 0;
+
+        var chkMultiScale = new CheckBox { Text = "Multi-Scale", Location = new Point(0, pcY), Size = new Size(100, 22), Font = new Font("Segoe UI", 9) };
+        pnlPatchCore.Controls.Add(chkMultiScale);
+
+        var chkClahe = new CheckBox { Text = "CLAHE", Location = new Point(105, pcY), Size = new Size(70, 22), Font = new Font("Segoe UI", 9) };
+        pnlPatchCore.Controls.Add(chkClahe);
+
+        var chkEdge = new CheckBox { Text = "Edge Mode", Location = new Point(180, pcY), Size = new Size(100, 22), Font = new Font("Segoe UI", 9) };
+        pnlPatchCore.Controls.Add(chkEdge);
+
+        var lblScoreMode = new Label { Text = "score_mode:", Location = new Point(290, pcY), Size = new Size(75, 20), Font = new Font("Segoe UI", 9) };
+        var cmbScoreMode = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = new Point(368, pcY - 2),
+            Size = new Size(85, 25),
+            Font = new Font("Segoe UI", 9)
+        };
+        cmbScoreMode.Items.AddRange(new object[] { "topk", "max", "percentile", "hybrid", "contrast", "spatial" });
+        cmbScoreMode.SelectedIndex = 0;
+        pnlPatchCore.Controls.Add(lblScoreMode);
+        pnlPatchCore.Controls.Add(cmbScoreMode);
+        pcY += 28;
+
+        var lblClaheClip = new Label { Text = "clahe_clip:", Location = new Point(0, pcY), Size = new Size(70, 20), Font = new Font("Segoe UI", 9) };
+        var nudClaheClip = new NumericUpDown { Minimum = 1, Maximum = 20, Value = 3, DecimalPlaces = 1, Increment = 0.5m, Location = new Point(72, pcY - 2), Size = new Size(55, 25) };
+        pnlPatchCore.Controls.Add(lblClaheClip);
+        pnlPatchCore.Controls.Add(nudClaheClip);
+
+        var lblHybridAlpha = new Label { Text = "hybrid_alpha:", Location = new Point(140, pcY), Size = new Size(85, 20), Font = new Font("Segoe UI", 9) };
+        var nudHybridAlpha = new NumericUpDown { Minimum = 0, Maximum = 1, Value = 0.5m, DecimalPlaces = 2, Increment = 0.1m, Location = new Point(228, pcY - 2), Size = new Size(55, 25) };
+        pnlPatchCore.Controls.Add(lblHybridAlpha);
+        pnlPatchCore.Controls.Add(nudHybridAlpha);
+
+        var lblPercentile = new Label { Text = "percentile:", Location = new Point(300, pcY), Size = new Size(68, 20), Font = new Font("Segoe UI", 9) };
+        var nudPercentile = new NumericUpDown { Minimum = 90, Maximum = 100, Value = 99, DecimalPlaces = 1, Increment = 0.5m, Location = new Point(370, pcY - 2), Size = new Size(55, 25) };
+        pnlPatchCore.Controls.Add(lblPercentile);
+        pnlPatchCore.Controls.Add(nudPercentile);
+
+        contentPanel.Controls.Add(pnlPatchCore);
+
+        // Toggle panel visibility when method changes
+        cmbAlgoMethod.SelectedIndexChanged += (s, e) =>
+        {
+            var isStructural = cmbAlgoMethod.SelectedItem?.ToString() == "structural";
+            pnlStructural.Visible = isStructural;
+            pnlPatchCore.Visible = !isStructural;
+        };
+
+        y += 60;
+
         // Start Training button
         var btnStartTrain = new Button
         {
@@ -1627,11 +1755,21 @@ public partial class MainForm : Form
                 projectId: txtTargetProject.Text.Trim(),
                 autoActivate: chkAutoActivate.Checked,
                 imgSize: (int)nudImgSize.Value,
+                algoMethod: cmbAlgoMethod.SelectedItem?.ToString() ?? "structural",
                 maxPatchesPerClass: (int)nudMaxPatch.Value,
                 k: (int)nudK.Value,
-                scoreMode: "topk",
+                scoreMode: cmbScoreMode.SelectedItem?.ToString() ?? "topk",
                 topk: (int)nudTopK.Value,
-                pThr: pThr
+                pThr: pThr,
+                multiScale: chkMultiScale.Checked,
+                useClahe: chkClahe.Checked,
+                claheClip: (double)nudClaheClip.Value,
+                claheGrid: 4,
+                scorePercentile: (double)nudPercentile.Value,
+                hybridAlpha: (double)nudHybridAlpha.Value,
+                useEdge: chkEdge.Checked,
+                essentialThr: (double)nudEssentialThr.Value,
+                structuralScorePercentile: (double)nudStructPercentile.Value
             );
 
             if (resp != null && resp.Ok)
@@ -1733,121 +1871,6 @@ public partial class MainForm : Form
         }
     }
 
-    // ==================================================================
-    // Python Backend Auto-Launch
-    // ==================================================================
-
-    private void StartBackendProcess()
-    {
-        try
-        {
-            // Determine paths relative to the exe location
-            var exeDir = AppDomain.CurrentDomain.BaseDirectory;
-            // Walk up to find the VisionHub root (parent of csharp_ui)
-            var rootDir = FindVisionHubRoot(exeDir);
-            if (rootDir == null)
-            {
-                // Not found — backend may already be running externally
-                return;
-            }
-
-            var pythonServiceDir = Path.Combine(rootDir, "python_service");
-            var venvPython = Path.Combine(pythonServiceDir, ".venv", "Scripts", "python.exe");
-
-            // Search for config file in common locations
-            string? configPath = null;
-            var configCandidates = new[]
-            {
-                Path.Combine(rootDir, "service", "service_config.yaml"),
-                Path.Combine(rootDir, "config_templates", "service_config.yaml"),
-                Path.Combine(pythonServiceDir, "service_config.yaml"),
-            };
-            foreach (var candidate in configCandidates)
-            {
-                if (File.Exists(candidate))
-                {
-                    configPath = candidate;
-                    break;
-                }
-            }
-
-            // Check if venv exists
-            if (!File.Exists(venvPython))
-            {
-                // Try alternate venv name
-                venvPython = Path.Combine(pythonServiceDir, "venv", "Scripts", "python.exe");
-                if (!File.Exists(venvPython))
-                {
-                    // No venv found — backend may be running externally
-                    return;
-                }
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = venvPython,
-                Arguments = "-m app.main",
-                WorkingDirectory = pythonServiceDir,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-            };
-
-            // Set config path environment variable
-            if (configPath != null)
-            {
-                psi.Environment["VISIONHUB_CONFIG"] = configPath;
-            }
-
-            _backendProcess = Process.Start(psi);
-        }
-        catch
-        {
-            // Silently ignore — backend may already be running or user starts it manually
-            _backendProcess = null;
-        }
-    }
-
-    private static string? FindVisionHubRoot(string startDir)
-    {
-        // Walk up directory tree looking for a folder that contains
-        // "python_service" subdirectory (the only required marker).
-        var dir = new DirectoryInfo(startDir);
-        for (int i = 0; i < 8 && dir != null; i++)
-        {
-            var pythonService = Path.Combine(dir.FullName, "python_service");
-            if (Directory.Exists(pythonService))
-            {
-                return dir.FullName;
-            }
-            dir = dir.Parent;
-        }
-        return null;
-    }
-
-    private void StopBackendProcess()
-    {
-        if (_backendProcess != null && !_backendProcess.HasExited)
-        {
-            try
-            {
-                // Try graceful shutdown first
-                _backendProcess.Kill(entireProcessTree: true);
-                _backendProcess.WaitForExit(3000);
-            }
-            catch
-            {
-                // Ignore errors during cleanup
-            }
-            finally
-            {
-                _backendProcess.Dispose();
-                _backendProcess = null;
-            }
-        }
-    }
-
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _healthTimer.Stop();
@@ -1859,7 +1882,6 @@ public partial class MainForm : Form
         }
         _logTimers.Clear();
         _apiClient.Dispose();
-        StopBackendProcess();
         base.OnFormClosing(e);
     }
 }

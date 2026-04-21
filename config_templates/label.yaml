@@ -1,8 +1,19 @@
-# VisionHub Project Configuration - Glyph/Character PatchCore Detection
+# VisionHub Project Configuration - Glyph/Character Defect Detection
 # Copy to DATA_ROOT/projects/<project_id>/project.yaml
 #
-# This project type detects per-character anomalies using PatchCore.
-# Each character class gets its own memory bank model (.joblib).
+# This project type detects per-character anomalies.
+# Three algorithm methods are available:
+#   1. "synthdefect" (RECOMMENDED) - Small U-Net trained with synthetic defects.
+#      OK-only data is enough; the trainer synthesises missing-stroke /
+#      ink-blob / patch-paste / region-blur defects on-the-fly and learns
+#      where they are.  Separates subtle defects from normal variation much
+#      better than any template-compare approach.
+#   2. "structural" - Binary template matching with probability maps.
+#      No CNN, very fast.  Thickness-invariant but can't always separate
+#      the smallest defects from normal OK variation.
+#   3. "patchcore" - CNN feature extraction + kNN memory bank.
+#      Uses ResNet18 features. More parameters to tune.
+# Each character class gets its own model (.joblib).
 #
 # Inference requires BOTH an image AND a JSON annotation file:
 #   TCP: {"cmd":"INFER","job_id":"001","image_path":"...","options":{"json_path":"..."}}
@@ -76,27 +87,124 @@ pipeline:
       save_summary_csv: false     # Save per-image summary CSV
       # overlay_output_path is configured in io section above
 
-  # Glyph PatchCore training parameters
+  # =====================================================================
+  # Training parameters (used by Label Training UI, Step 3)
+  # =====================================================================
   _train:
+    # --- Algorithm method ---
+    algo_method: "structural"     # "structural" (recommended) or "patchcore"
+                                  #
+                                  # structural: Binary template matching.
+                                  #   Train: binarise OK samples → pixel probability map
+                                  #   Infer: missing high-probability pixels = defect
+                                  #   Pros: thickness-invariant, no GPU needed, fast
+                                  #
+                                  # patchcore: CNN feature + kNN memory bank.
+                                  #   Train: extract ResNet18 features → build memory bank
+                                  #   Infer: kNN distance = anomaly score
+                                  #   Pros: captures texture details, well-studied method
+
     # --- Glyph cropping ---
     pad: 2                        # Padding pixels around each glyph bounding box
 
-    # --- CNN feature extraction ---
+    # --- Common ---
     img_size: 128                 # Resize each glyph crop to this size (square)
-    # Uses ResNet18 layer2 (shallow features, good for character stroke details)
+    p_thr: 0.97                   # Quantile of OK score distribution for threshold
+    min_per_class: 10             # Minimum OK images per class to train
+
+    # =================================================================
+    # synthdefect algorithm parameters (only used when algo_method=synthdefect)
+    # =================================================================
+    epochs: 25                    # U-Net training epochs per class.
+                                  # Defect generators are sampled on-the-fly
+                                  # so more epochs = more unique synthetic
+                                  # defects seen.  Range: 15~40
+    batch_size: 32                # Mini-batch size
+    lr: 2e-3                      # Adam learning rate
+    base_ch: 16                   # U-Net base channel width. 16 is enough
+                                  # for 128x128 glyphs; increase to 24 if
+                                  # a class has very fine-grained defects
+                                  # that 16 can't localise
+    val_frac: 0.15                # Fraction of OK samples held out from
+                                  # training to calibrate the threshold.
+                                  # Preventing overfit the threshold is
+                                  # critical for real-world recall.
+    thr_safety: 1.15              # Safety multiplier on the val p_thr
+                                  # quantile.  thr = max(val_p * thr_safety,
+                                  # val_max * 1.02) so no held-out OK
+                                  # sample can exceed the threshold.
+                                  # Lower = more recall, higher = less FP.
+
+    # =================================================================
+    # Structural algorithm parameters (only used when algo_method=structural)
+    # =================================================================
+    essential_thr: 0.7            # Pixel probability threshold for "essential" mask.
+                                  # A pixel is essential if it appears as foreground in
+                                  # ≥ essential_thr fraction of OK training samples.
+                                  # Lower = more pixels considered essential = more sensitive
+                                  # but may increase false positives.  Range: 0.3 ~ 0.95
+    dilate_k: 2                   # Dilation kernel size for test image before comparison.
+                                  # Provides tolerance for small position shifts / ink spread.
+                                  # Set to 0 to disable dilation.  Range: 0 ~ 5
+    blur_sigma: 1.5               # Gaussian blur sigma for probability map smoothing.
+                                  # Smooths the essential mask for more stable results.
+                                  # Range: 0 ~ 5
+
+    # =================================================================
+    # PatchCore algorithm parameters (only used when algo_method=patchcore)
+    # =================================================================
+
+    # --- Multi-scale features (recommended for small defect detection) ---
+    multi_scale: false            # true: use layer1+layer2 (192-dim, 1/4 resolution)
+                                  #   4x finer spatial detail → small defects (missing
+                                  #   corners, thin cracks) affect more patches and are
+                                  #   easier to detect.  ~4x more patches per glyph.
+                                  # false (default): layer2 only (128-dim, 1/8 resolution)
+                                  #   Faster, compatible with existing models.
+
+    # --- Edge preprocessing (RECOMMENDED for glyph defect detection) ---
+    use_edge: false               # Convert glyphs to Sobel edge maps before CNN.
+                                  # The CNN then sees character *boundaries/shape*
+                                  # instead of fill/intensity.
+                                  # - Thickness variation → same edge topology → low score
+                                  # - Missing corner → missing edges → high score
+                                  # This fundamentally solves the problem where normal
+                                  # thickness/size variations score higher than actual
+                                  # structural defects.
+
+    # --- CLAHE preprocessing (optional, reduce false positives) ---
+    use_clahe: false              # Apply CLAHE (Contrast Limited Adaptive Histogram
+                                  # Equalization) before CNN feature extraction.
+                                  # Normalizes local contrast → reduces sensitivity to
+                                  # stroke thickness / ink density variations while
+                                  # enhancing local structural defects.
+    clahe_clip: 3.0               # CLAHE clip limit (higher = more contrast enhancement)
+    clahe_grid: 4                 # CLAHE tile grid size
 
     # --- Memory bank ---
     max_patches_per_class: 30000  # Maximum patches in memory bank per class
-    min_per_class: 10             # Minimum OK images per class to train
 
     # --- kNN scoring ---
     k: 1                          # Number of nearest neighbors
-    score_mode: "topk"            # "topk" (mean of top-K patch distances) or "max"
-    topk: 10                      # Number of top patches to average (when score_mode=topk)
-
-    # --- Threshold ---
-    p_thr: 0.995                  # Quantile of OK score distribution for threshold
-    # Each class gets its own threshold based on its OK samples
+    score_mode: "topk"            # Scoring strategy:
+                                  #   "topk" - mean of top-K patch distances (default)
+                                  #   "max" - maximum patch distance (most sensitive
+                                  #           to single-patch outliers)
+                                  #   "percentile" - high percentile of patch distances
+                                  #   "hybrid" - alpha*max + (1-alpha)*topk_mean
+                                  #   "contrast" - top-K mean / median ratio
+                                  #     Suppresses global variations while amplifying
+                                  #     localized defects (missing corners/cracks)
+                                  #   "spatial" - topk_mean × (1 + locality_weight)
+                                  #     Weights score by spatial concentration of top-K
+                                  #     patches.  Clustered anomalies (defect in one
+                                  #     corner) get up to 2× amplification vs spread
+                                  #     anomalies (uniform thickness change).
+                                  #     RECOMMENDED with Edge Mode for glyph defects.
+    topk: 5                       # Top patches to average (for topk/hybrid modes)
+                                  # Lower value = more sensitive to localized defects
+    score_percentile: 99.0        # Percentile to use (for percentile mode)
+    hybrid_alpha: 0.5             # Weight for max in hybrid mode (0..1)
 
     # --- Model compression (optional, post-training) ---
     shrink:

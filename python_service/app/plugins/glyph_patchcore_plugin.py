@@ -39,6 +39,8 @@ from app.plugins.glyph_patchcore_core import (
     crop_glyphs_from_json,
     train_glyph_patchcore,
 )
+from app.plugins.glyph_structural_core import GlyphStructuralEngine
+from app.plugins.glyph_synthdefect_core import GlyphSynthDefectEngine
 from app.plugins.registry import PluginRegistry
 
 logger = logging.getLogger(__name__)
@@ -79,7 +81,12 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
         return self._model_version
 
     def load(self, model_dir: str, device: str, config: dict[str, Any]) -> None:
-        """Load all glyph class models from model_dir/*.joblib."""
+        """Load all glyph class models from model_dir/*.joblib.
+
+        Auto-detects model type from index.json: if algo_method is
+        "structural", uses GlyphStructuralEngine; otherwise uses
+        GlyphPatchCoreEngine.
+        """
         self._model_dir = model_dir
         self._device_str = device
         self._config = config
@@ -91,27 +98,49 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
         if not joblib_files:
             raise FileNotFoundError(f"No .joblib model files found in: {model_dir}")
 
-        logger.info("Loading glyph PatchCore models from %s (%d class files)...",
-                     model_dir, len(joblib_files))
+        # Detect model type from index.json
+        algo_method = "patchcore"
+        index_json = model_path / "index.json"
+        if index_json.exists():
+            idx = json.loads(index_json.read_text(encoding="utf-8"))
+            algo_method = idx.get("algo_method", "patchcore")
 
-        # Engine config from pipeline infer section
-        infer_cfg = config.get("infer", {})
-
-        effective_device = device
-        if device == "auto":
-            import torch
-            effective_device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self._engine = GlyphPatchCoreEngine(
-            model_dir=model_dir,
-            device=effective_device,
-            use_fp16=bool(infer_cfg.get("use_fp16", True)),
-            use_gpu_knn=bool(infer_cfg.get("use_gpu_knn", True)),
-            cnn_batch=int(infer_cfg.get("cnn_batch", 64)),
-            knn_bank_block=int(infer_cfg.get("knn_bank_block", 20000)),
-            feature_layers=str(infer_cfg.get("feature_layers", "layer2")),
-            clahe_clip=float(infer_cfg.get("clahe_clip", 0.0)),
-        )
+        if algo_method == "synthdefect":
+            logger.info(
+                "Loading glyph SYNTHDEFECT (U-Net) models from %s (%d class files)...",
+                model_dir, len(joblib_files),
+            )
+            effective_device = device
+            if device == "auto":
+                import torch
+                effective_device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._engine = GlyphSynthDefectEngine(  # type: ignore[assignment]
+                model_dir=model_dir, device=effective_device,
+            )
+        elif algo_method == "structural":
+            logger.info(
+                "Loading glyph STRUCTURAL models from %s (%d class files)...",
+                model_dir, len(joblib_files),
+            )
+            self._engine = GlyphStructuralEngine(model_dir=model_dir)  # type: ignore[assignment]
+        else:
+            logger.info(
+                "Loading glyph PatchCore models from %s (%d class files)...",
+                model_dir, len(joblib_files),
+            )
+            infer_cfg = config.get("infer", {})
+            effective_device = device
+            if device == "auto":
+                import torch
+                effective_device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._engine = GlyphPatchCoreEngine(
+                model_dir=model_dir,
+                device=effective_device,
+                use_fp16=bool(infer_cfg.get("use_fp16", True)),
+                use_gpu_knn=bool(infer_cfg.get("use_gpu_knn", True)),
+                cnn_batch=int(infer_cfg.get("cnn_batch", 64)),
+                knn_bank_block=int(infer_cfg.get("knn_bank_block", 20000)),
+            )
 
         # Read version from meta.json or directory name
         meta_json = model_path / "meta.json"
@@ -122,9 +151,10 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             self._model_version = model_path.name
 
         self._loaded = True
+        n_classes = len(self._engine.cls_models)
         logger.info(
-            "Glyph PatchCore loaded: version=%s, device=%s, classes=%d",
-            self._model_version, effective_device, len(self._engine.cls_models),
+            "Glyph model loaded: version=%s, method=%s, classes=%d",
+            self._model_version, algo_method, n_classes,
         )
 
     def unload(self) -> None:
@@ -307,9 +337,13 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
             topk=int(train_cfg.get("topk", 10)),
             p_thr=float(train_cfg.get("p_thr", 0.995)),
             min_per_class=int(train_cfg.get("min_per_class", 10)),
+            multi_scale=bool(train_cfg.get("multi_scale", False)),
+            use_clahe=bool(train_cfg.get("use_clahe", False)),
+            clahe_clip=float(train_cfg.get("clahe_clip", 3.0)),
+            clahe_grid=int(train_cfg.get("clahe_grid", 4)),
+            score_percentile=float(train_cfg.get("score_percentile", 99.0)),
+            hybrid_alpha=float(train_cfg.get("hybrid_alpha", 0.5)),
             progress_cb=progress_cb,
-            feature_layers=str(train_cfg.get("feature_layers", "layer2")),
-            clahe_clip=float(train_cfg.get("clahe_clip", 0.0)),
         )
 
         # --- Step 3: Save meta.json ---
@@ -328,8 +362,12 @@ class GlyphPatchCoreV1Plugin(AlgoPluginBase):
                 "p_thr": float(train_cfg.get("p_thr", 0.995)),
                 "max_patches_per_class": int(train_cfg.get("max_patches_per_class", 30000)),
                 "pad": pad,
-                "feature_layers": str(train_cfg.get("feature_layers", "layer2")),
-                "clahe_clip": float(train_cfg.get("clahe_clip", 0.0)),
+                "multi_scale": bool(train_cfg.get("multi_scale", False)),
+                "use_clahe": bool(train_cfg.get("use_clahe", False)),
+                "clahe_clip": float(train_cfg.get("clahe_clip", 3.0)),
+                "clahe_grid": int(train_cfg.get("clahe_grid", 4)),
+                "score_percentile": float(train_cfg.get("score_percentile", 99.0)),
+                "hybrid_alpha": float(train_cfg.get("hybrid_alpha", 0.5)),
             },
         }
         with open(out_path / "meta.json", "w", encoding="utf-8") as f:

@@ -58,7 +58,14 @@ class ProjectState:
             if models_dir.exists():
                 versions = sorted(models_dir.iterdir(), reverse=True)
                 for v in versions:
-                    if v.is_dir() and (v / "meta.json").exists():
+                    if not v.is_dir():
+                        continue
+                    # Accept model dirs with meta.json (standard) or
+                    # index.json (glyph patchcore) or .joblib files
+                    has_meta = (v / "meta.json").exists()
+                    has_index = (v / "index.json").exists()
+                    has_joblib = any(v.glob("*.joblib"))
+                    if has_meta or has_index or has_joblib:
                         return str(v)
             return None
 

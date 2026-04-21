@@ -134,24 +134,26 @@ def _ensure_torch() -> None:
 
 
 class ResNetFeatGlyph:
-    """ResNet18 feature extractor up to layer2 (shallow, suitable for glyph defects).
+    """ResNet18 feature extractor for glyph defects.
 
     Supports two modes:
-    - "layer2" (default): Uses only layer2 (128-dim features at ~8x8 resolution)
-    - "multi" (layer1+layer2): Concatenates layer1 (64-dim, ~16x16) with
-      upsampled layer2 (128-dim) to produce 192-dim features at ~16x16 resolution.
-      This gives 4x more patches and higher spatial sensitivity for small defects.
+    - single_scale (default): layer2 only (128-dim, 1/8 resolution)
+      Good for general character anomaly detection.
+    - multi_scale: layer1 + layer2 concatenated (192-dim, 1/4 resolution)
+      Provides 4x finer spatial detail, making small defects (missing corners,
+      thin cracks) affect more patches proportionally. Recommended for
+      detecting subtle per-character defects.
     """
 
-    def __init__(self, feature_layers: str = "layer2") -> None:
+    def __init__(self, multi_scale: bool = False) -> None:
         _ensure_torch()
         assert _torch is not None and _nn is not None and _models is not None
         m = _models.resnet18(weights=_models.ResNet18_Weights.IMAGENET1K_V1)
         self.stem = _nn.Sequential(m.conv1, m.bn1, m.relu, m.maxpool)
         self.layer1 = m.layer1
         self.layer2 = m.layer2
-        self.feature_layers = feature_layers
-        # Build as nn.Module for .to() / .eval() / state_dict
+        self.multi_scale = multi_scale
+        # Build as nn.Module for .to() / .eval()
         self._net = _nn.Sequential(self.stem, self.layer1, self.layer2)
 
     def to(self, device: Any) -> "ResNetFeatGlyph":
@@ -166,26 +168,17 @@ class ResNetFeatGlyph:
         return self
 
     def __call__(self, x: Any) -> Any:
-        if self.feature_layers == "multi":
-            return self._forward_multiscale(x)
+        if self.multi_scale:
+            assert _torch is not None
+            h = self.stem(x)
+            f1 = self.layer1(h)    # [B, 64, H/4, W/4]
+            f2 = self.layer2(f1)   # [B, 128, H/8, W/8]
+            # Upsample layer2 to match layer1 spatial resolution
+            f2_up = _torch.nn.functional.interpolate(
+                f2, size=f1.shape[2:], mode="bilinear", align_corners=False,
+            )
+            return _torch.cat([f1, f2_up], dim=1)  # [B, 192, H/4, W/4]
         return self._net(x)
-
-    def _forward_multiscale(self, x: Any) -> Any:
-        """Multi-scale forward: concatenate layer1 + upsampled layer2.
-
-        Returns [B, 192, H1, W1] where H1/W1 is layer1's spatial resolution.
-        This provides 4x more patches than layer2-only, each covering a smaller
-        area of the original image, making small defects more detectable.
-        """
-        assert _torch is not None and _nn is not None
-        x = self.stem(x)
-        feat1 = self.layer1(x)    # [B, 64, H1, W1]  e.g. 16x16 for 128 input
-        feat2 = self.layer2(feat1) # [B, 128, H2, W2] e.g. 8x8 for 128 input
-        # Upsample layer2 to match layer1's spatial resolution
-        feat2_up = _nn.functional.interpolate(
-            feat2, size=feat1.shape[2:], mode="bilinear", align_corners=False,
-        )
-        return _torch.cat([feat1, feat2_up], dim=1)  # [B, 192, H1, W1]
 
 
 # ---------------------------------------------------------------------------
@@ -208,23 +201,68 @@ def _get_glyph_transform() -> Any:
     return _glyph_tf
 
 
+def _apply_edge_preprocessing(gray: np.ndarray) -> np.ndarray:
+    """Convert grayscale image to Sobel edge magnitude map.
+
+    This transforms the image so the CNN sees *boundary/shape* information
+    rather than *fill/intensity* information.  Key properties:
+
+    - **Thickness-invariant**: A thick "A" and a thin "A" have the same
+      edge topology (edges at stroke boundaries), so their CNN features
+      are close → low anomaly score.
+    - **Defect-sensitive**: A "2" missing a corner has *missing edges* in
+      that region → very different edge pattern → high anomaly score.
+
+    Pipeline: Gaussian blur → Sobel X/Y → magnitude → normalize to 0-255.
+    """
+    # Light blur to suppress noise while preserving edges
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    # Sobel gradients (float64 to avoid overflow)
+    sx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+    sy = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+    mag = np.sqrt(sx * sx + sy * sy)
+    # Normalize to 0-255
+    mag_max = mag.max()
+    if mag_max > 0:
+        mag = (mag / mag_max * 255.0)
+    return mag.astype(np.uint8)
+
+
 def preprocess_gray_to_tensor(
-    gray: np.ndarray, size: int, clahe_clip: float = 0.0,
+    gray: np.ndarray,
+    size: int,
+    use_clahe: bool = False,
+    clahe_clip: float = 3.0,
+    clahe_grid: int = 4,
+    use_edge: bool = False,
 ) -> Any:
     """Preprocess a grayscale glyph crop to a [1,3,S,S] tensor.
 
     Args:
-        gray: Grayscale glyph image (uint8).
-        size: Target size for resizing.
-        clahe_clip: CLAHE clipLimit for local contrast enhancement.
-            0.0 means disabled (default, backward compatible).
-            Recommended range 1.0-3.0 for small-defect enhancement.
+        gray: Input grayscale image crop.
+        size: Target square size.
+        use_clahe: Apply CLAHE (Contrast Limited Adaptive Histogram
+            Equalization) before feature extraction.  CLAHE normalizes
+            local contrast, reducing sensitivity to global stroke
+            thickness / intensity variations while enhancing local
+            structural defects.
+        clahe_clip: CLAHE clip limit (higher = more contrast enhancement).
+        clahe_grid: CLAHE tile grid size.
+        use_edge: Convert to Sobel edge map before CNN.  This makes the
+            model focus on character *boundaries/shape* rather than
+            fill/intensity, dramatically improving separation between
+            structural defects (missing corner) and cosmetic variations
+            (stroke thickness).  Recommended for glyph defect detection.
     """
     _ensure_torch()
     g = cv2.resize(gray, (size, size), interpolation=cv2.INTER_CUBIC)
-    if clahe_clip > 0:
-        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(4, 4))
+    if use_clahe:
+        clahe = cv2.createCLAHE(
+            clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid),
+        )
         g = clahe.apply(g)
+    if use_edge:
+        g = _apply_edge_preprocessing(g)
     rgb = np.stack([g, g, g], axis=-1).astype(np.uint8)
     return _get_glyph_transform()(rgb).unsqueeze(0)
 
@@ -282,33 +320,109 @@ def knn_mean_distance_torch(
     return _torch.sqrt(best).mean(dim=1)  # [M]
 
 
-def score_from_patch_distances(d_patch: Any, score_mode: str, topk: int) -> float:
+def score_from_patch_distances(
+    d_patch: Any,
+    score_mode: str,
+    topk: int,
+    percentile: float = 99.0,
+    hybrid_alpha: float = 0.5,
+) -> float:
     """Compute glyph-level score from patch distances.
 
     Args:
         d_patch: [N] tensor of patch distances
-        score_mode: Aggregation mode:
-            - "max": maximum patch distance (most sensitive, may be noisy)
-            - "topk": mean of top-k largest distances (default, robust)
-            - "adaptive": geometric mean of max and topk-mean, i.e.
-              sqrt(max * topk_mean). This amplifies the anomaly signal
-              from the worst patch while retaining topk robustness.
-              Especially effective for small defects where only 1-2
-              patches are anomalous.
-        topk: number of top distances to average (for "topk" and "adaptive")
+        score_mode: Scoring strategy:
+            - "max": Maximum patch distance (most sensitive to single outlier)
+            - "topk": Mean of top-K patch distances (default)
+            - "percentile": Use a high percentile of patch distances
+            - "hybrid": Blend of max and topk: alpha*max + (1-alpha)*topk_mean
+            - "contrast": top-K mean / median ratio.  Measures how much the
+              worst patches stand out from the typical patch.  A localized
+              defect (missing corner) produces a few very-high-distance
+              patches while the median stays low → high ratio.  A global
+              variation (stroke thickness) raises *all* patches uniformly
+              → ratio stays close to 1.  This naturally suppresses false
+              positives from thickness/size variation.
+            - "spatial": topk_mean × (1 + locality).  Weights score by
+              spatial concentration of top-K patches.  Clustered anomalies
+              (defect in one corner) get up to 2× amplification vs spread
+              anomalies (uniform thickness change).
+        topk: Number of top distances to average (for topk/hybrid/contrast)
+        percentile: Percentile to use (for percentile mode, e.g. 99.0)
+        hybrid_alpha: Weight for max in hybrid mode (0..1)
     """
     _ensure_torch()
     assert _torch is not None
+    n = d_patch.numel()
+
     if score_mode == "max":
         return float(d_patch.max().item())
-    topk = max(1, min(int(topk), d_patch.numel()))
-    v = _torch.topk(d_patch, k=topk, largest=True).values
-    topk_mean = float(v.mean().item())
-    if score_mode == "adaptive":
+
+    if score_mode == "percentile":
+        # Use percentile: e.g. 99th percentile of N patches
+        k = max(1, int(n * (1.0 - percentile / 100.0)))
+        k = max(1, min(k, n))
+        v = _torch.topk(d_patch, k=k, largest=True).values
+        return float(v.mean().item())
+
+    if score_mode == "hybrid":
+        # Blend max and topk_mean for sensitivity to both isolated and
+        # distributed defects
         max_val = float(d_patch.max().item())
-        # Geometric mean: amplifies max anomaly while keeping topk robustness
-        return float(np.sqrt(max_val * topk_mean))
-    return topk_mean
+        tk = max(1, min(int(topk), n))
+        topk_val = float(_torch.topk(d_patch, k=tk, largest=True).values.mean().item())
+        alpha = max(0.0, min(1.0, hybrid_alpha))
+        return alpha * max_val + (1.0 - alpha) * topk_val
+
+    if score_mode == "contrast":
+        # Ratio of top-K mean to median.
+        # Localized defect → high ratio (outlier patches >> median)
+        # Global variation  → ratio ≈ 1  (all patches equally elevated)
+        tk = max(1, min(int(topk), n))
+        topk_mean = float(_torch.topk(d_patch, k=tk, largest=True).values.mean().item())
+        median_val = float(_torch.median(d_patch).item())
+        eps = 1e-6
+        return topk_mean / (median_val + eps)
+
+    if score_mode == "spatial":
+        # Spatial-concentration-weighted scoring.
+        #
+        # Idea: a LOCALIZED defect (missing corner) produces high-distance
+        # patches that are CLUSTERED in one area of the feature map.
+        # A GLOBAL variation (thickness) produces high-distance patches
+        # that are SPREAD across the whole feature map.
+        #
+        # 1. Find the top-K most anomalous patches and their 2D positions.
+        # 2. Measure spatial dispersion (mean distance from centroid).
+        # 3. Compute locality = 1 − (dispersion / max_possible_dispersion).
+        #    Clustered → locality ≈ 1; spread → locality ≈ 0.
+        # 4. Final score = topk_mean × (1 + locality).
+        #    Concentrated anomalies get up to 2× amplification.
+        tk = max(1, min(int(topk), n))
+        values, indices = _torch.topk(d_patch, k=tk, largest=True)
+        topk_mean = float(values.mean().item())
+
+        # Infer 2D spatial dimensions (feature map is always square)
+        h = int(round(n ** 0.5))
+        w = h if h * h == n else n // h
+        rows = (indices // w).float()
+        cols = (indices % w).float()
+
+        # Spatial dispersion: RMS distance from centroid of top-K
+        cr = rows.mean()
+        cc = cols.mean()
+        dispersion = (((rows - cr) ** 2 + (cols - cc) ** 2).mean()).sqrt()
+
+        # Max possible dispersion ≈ half the diagonal
+        max_disp = ((h / 2.0) ** 2 + (w / 2.0) ** 2) ** 0.5
+        locality = 1.0 - min(float(dispersion.item()) / (max_disp + 1e-6), 1.0)
+
+        return topk_mean * (1.0 + locality)
+
+    # Default: topk
+    topk = max(1, min(int(topk), n))
+    v = _torch.topk(d_patch, k=topk, largest=True).values
+    return float(v.mean().item())
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +443,13 @@ class GlyphClassModel:
     bank_t: Any          # torch.Tensor on device (fp16 for GPU)
     bank_norm: Any        # torch.Tensor [B] float32
     nn_cpu: Any = None    # sklearn NearestNeighbors (CPU fallback)
-    feature_layers: str = "layer2"  # "layer2" or "multi" (layer1+layer2)
-    clahe_clip: float = 0.0         # CLAHE clipLimit (0 = disabled)
+    multi_scale: bool = False   # layer1+layer2 multi-scale features
+    use_clahe: bool = False     # CLAHE preprocessing applied during training
+    clahe_clip: float = 3.0     # CLAHE clip limit
+    clahe_grid: int = 4         # CLAHE tile grid size
+    score_percentile: float = 99.0   # for percentile score_mode
+    hybrid_alpha: float = 0.5        # for hybrid score_mode
+    use_edge: bool = False      # Sobel edge preprocessing
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +472,6 @@ class GlyphPatchCoreEngine:
         use_gpu_knn: bool = True,
         cnn_batch: int = 64,
         knn_bank_block: int = 20000,
-        feature_layers: str = "layer2",
-        clahe_clip: float = 0.0,
     ) -> None:
         _ensure_torch()
         assert _torch is not None
@@ -368,29 +485,32 @@ class GlyphPatchCoreEngine:
         self.use_gpu_knn = use_gpu_knn and self.device == "cuda"
         self.cnn_batch = cnn_batch
         self.knn_bank_block = knn_bank_block
-        self.feature_layers = feature_layers
-        self.clahe_clip = clahe_clip
 
         if self.device == "cuda":
             _torch.backends.cudnn.benchmark = True
 
-        # Build feature extractor (detect multi-scale from model files)
         self.cls_models: dict[str, GlyphClassModel] = {}
 
-        # Load class models first to detect feature_layers from saved models
+        # Load class models first (to read multi_scale flag from saved models)
         self._load_models(Path(model_dir))
 
-        # Determine effective feature_layers: model-saved value takes priority
-        effective_layers = self._detect_feature_layers()
-        self.net = ResNetFeatGlyph(feature_layers=effective_layers).to(self.device).eval()
-        self._warmup()
-
-    def _detect_feature_layers(self) -> str:
-        """Detect feature_layers from loaded models or use engine default."""
+        # Determine feature extraction mode from loaded models
+        self.multi_scale = False
+        self.use_clahe = False
+        self.clahe_clip = 3.0
+        self.clahe_grid = 4
+        self.use_edge = False
         if self.cls_models:
-            first_model = next(iter(self.cls_models.values()))
-            return first_model.feature_layers
-        return self.feature_layers
+            sample = next(iter(self.cls_models.values()))
+            self.multi_scale = sample.multi_scale
+            self.use_clahe = sample.use_clahe
+            self.clahe_clip = sample.clahe_clip
+            self.clahe_grid = sample.clahe_grid
+            self.use_edge = sample.use_edge
+
+        # Build feature extractor matching the model's training mode
+        self.net = ResNetFeatGlyph(multi_scale=self.multi_scale).to(self.device).eval()
+        self._warmup()
 
     def _load_models(self, model_dir: Path) -> None:
         """Load all .joblib class models from the model directory."""
@@ -415,9 +535,13 @@ class GlyphPatchCoreEngine:
             score_mode = str(m.get("score_mode", "topk"))
             topk = int(m.get("topk", 10))
             thr = float(m.get("thr", 1e9))
-            # Read feature_layers and clahe_clip from model if saved during training
-            model_feature_layers = str(m.get("feature_layers", self.feature_layers))
-            model_clahe_clip = float(m.get("clahe_clip", self.clahe_clip))
+            multi_scale = bool(m.get("multi_scale", False))
+            use_clahe = bool(m.get("use_clahe", False))
+            clahe_clip = float(m.get("clahe_clip", 3.0))
+            clahe_grid = int(m.get("clahe_grid", 4))
+            score_percentile = float(m.get("score_percentile", 99.0))
+            hybrid_alpha = float(m.get("hybrid_alpha", 0.5))
+            use_edge = bool(m.get("use_edge", False))
 
             # Prepare tensors for GPU kNN
             dev = _torch.device("cuda") if self.use_gpu_knn else _torch.device("cpu")
@@ -436,16 +560,20 @@ class GlyphPatchCoreEngine:
                 cls=cls, img_size=img_size, k=k, score_mode=score_mode,
                 topk=topk, thr=thr, bank_t=bank_t, bank_norm=bank_norm,
                 nn_cpu=nn_cpu,
-                feature_layers=model_feature_layers,
-                clahe_clip=model_clahe_clip,
+                multi_scale=multi_scale, use_clahe=use_clahe,
+                clahe_clip=clahe_clip, clahe_grid=clahe_grid,
+                score_percentile=score_percentile, hybrid_alpha=hybrid_alpha,
+                use_edge=use_edge,
             )
 
         logger.info(
             "Glyph models loaded: %d classes from %s, total_bank=%d, "
-            "device=%s, fp16=%s, gpu_knn=%s, feature_layers=%s, clahe_clip=%.1f",
+            "device=%s, fp16=%s, gpu_knn=%s, multi_scale=%s, clahe=%s, edge=%s",
             len(self.cls_models), model_dir, total_bank,
             self.device, self.fp16, self.use_gpu_knn,
-            self._detect_feature_layers(), self.clahe_clip,
+            self.cls_models and next(iter(self.cls_models.values())).multi_scale,
+            self.cls_models and next(iter(self.cls_models.values())).use_clahe,
+            self.cls_models and next(iter(self.cls_models.values())).use_edge,
         )
 
     def _warmup(self) -> None:
@@ -587,7 +715,10 @@ class GlyphPatchCoreEngine:
                     xs = [
                         preprocess_gray_to_tensor(
                             glyphs[gi]["patch"], sz,
-                            clahe_clip=glyphs[gi]["cm"].clahe_clip,
+                            use_clahe=self.use_clahe,
+                            clahe_clip=self.clahe_clip,
+                            clahe_grid=self.clahe_grid,
+                            use_edge=self.use_edge,
                         )
                         for gi in batch_ids
                     ]
@@ -638,7 +769,11 @@ class GlyphPatchCoreEngine:
                 n_patches = glyphs[idxs[0]]["emb_t"].shape[0]
                 for k_i, gi in enumerate(idxs):
                     dd = d[k_i * n_patches:(k_i + 1) * n_patches]
-                    score = score_from_patch_distances(dd, cm.score_mode, cm.topk)
+                    score = score_from_patch_distances(
+                        dd, cm.score_mode, cm.topk,
+                        percentile=cm.score_percentile,
+                        hybrid_alpha=cm.hybrid_alpha,
+                    )
                     self._record_glyph_result(
                         glyphs[gi], score, vis, regions, thr_global,
                     )
@@ -654,11 +789,12 @@ class GlyphPatchCoreEngine:
                 assert cm.nn_cpu is not None
                 d_arr, _ = cm.nn_cpu.kneighbors(emb_np)
                 d_mean = d_arr.mean(axis=1)
-                if cm.score_mode == "max":
-                    score = float(d_mean.max())
-                else:
-                    topk_val = min(cm.topk, d_mean.shape[0])
-                    score = float(np.mean(np.sort(d_mean)[-topk_val:]))
+                d_t = _torch.from_numpy(d_mean)
+                score = score_from_patch_distances(
+                    d_t, cm.score_mode, cm.topk,
+                    percentile=cm.score_percentile,
+                    hybrid_alpha=cm.hybrid_alpha,
+                )
                 self._record_glyph_result(g, score, vis, regions, thr_global)
                 if score > max_score:
                     max_score = score
@@ -817,22 +953,6 @@ def crop_glyphs_from_json(
     return saved
 
 
-def _compute_ok_score(d_mean: np.ndarray, score_mode: str, topk: int) -> float:
-    """Compute a single glyph-level OK score from patch distances (numpy).
-
-    Supports the same modes as score_from_patch_distances but on numpy arrays,
-    used during training threshold computation.
-    """
-    if score_mode == "max":
-        return float(d_mean.max())
-    tk = min(topk, d_mean.shape[0])
-    topk_mean = float(np.mean(np.sort(d_mean)[-tk:]))
-    if score_mode == "adaptive":
-        max_val = float(d_mean.max())
-        return float(np.sqrt(max_val * topk_mean))
-    return topk_mean
-
-
 def train_glyph_patchcore(
     bank_dir: str,
     out_model_dir: str,
@@ -843,9 +963,14 @@ def train_glyph_patchcore(
     topk: int = 10,
     p_thr: float = 0.995,
     min_per_class: int = 10,
+    multi_scale: bool = False,
+    use_clahe: bool = False,
+    clahe_clip: float = 3.0,
+    clahe_grid: int = 4,
+    score_percentile: float = 99.0,
+    hybrid_alpha: float = 0.5,
+    use_edge: bool = False,
     progress_cb: Any = None,
-    feature_layers: str = "layer2",
-    clahe_clip: float = 0.0,
 ) -> dict[str, Any]:
     """Train PatchCore models for each glyph class.
 
@@ -855,17 +980,27 @@ def train_glyph_patchcore(
         img_size: Input image size for the CNN.
         max_patches_per_class: Maximum patches in memory bank per class.
         k: Number of nearest neighbors.
-        score_mode: Score aggregation mode ("max", "topk", or "adaptive").
-        topk: Number of top distances to average when score_mode="topk"/"adaptive".
+        score_mode: Score aggregation mode ("max", "topk", "percentile",
+            "hybrid").
+        topk: Number of top distances to average when score_mode="topk".
         p_thr: Quantile for threshold computation from OK score distribution.
         min_per_class: Minimum images per class to train.
+        multi_scale: Use layer1+layer2 multi-scale features (192-dim, 1/4
+            resolution) instead of layer2 only (128-dim, 1/8 resolution).
+            Multi-scale provides 4x finer spatial detail for detecting small
+            defects like missing corners or thin cracks.
+        use_clahe: Apply CLAHE preprocessing to normalize local contrast,
+            reducing sensitivity to stroke thickness / intensity variations.
+        clahe_clip: CLAHE clip limit.
+        clahe_grid: CLAHE tile grid size.
+        score_percentile: Percentile for "percentile" score_mode.
+        hybrid_alpha: Weight for max in "hybrid" score_mode (0..1).
+        use_edge: Apply Sobel edge preprocessing before CNN feature
+            extraction.  Converts glyph images to edge maps so the model
+            compares character *boundaries/shape* instead of fill/intensity.
+            This dramatically improves separation between structural defects
+            (missing corners) and cosmetic variations (stroke thickness).
         progress_cb: Optional callback(progress_pct, message).
-        feature_layers: Feature extraction mode:
-            - "layer2" (default): ResNet18 layer2 only (128-dim, 8x8 for 128 input)
-            - "multi": layer1+layer2 concatenated (192-dim, 16x16 for 128 input)
-              Gives 4x more patches for better small-defect detection.
-        clahe_clip: CLAHE clipLimit for local contrast enhancement (0 = disabled).
-            Recommended 1.0-3.0 for small-defect enhancement.
 
     Returns:
         Training report dict.
@@ -881,7 +1016,7 @@ def train_glyph_patchcore(
     out_path.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if _torch.cuda.is_available() else "cpu"
-    net = ResNetFeatGlyph(feature_layers=feature_layers).to(device).eval()
+    net = ResNetFeatGlyph(multi_scale=multi_scale).to(device).eval()
 
     class_dirs = [p for p in bank_path.iterdir() if p.is_dir()]
     if not class_dirs:
@@ -893,8 +1028,13 @@ def train_glyph_patchcore(
         "topk": topk,
         "k": k,
         "p_thr": p_thr,
-        "feature_layers": feature_layers,
+        "multi_scale": multi_scale,
+        "use_clahe": use_clahe,
         "clahe_clip": clahe_clip,
+        "clahe_grid": clahe_grid,
+        "score_percentile": score_percentile,
+        "hybrid_alpha": hybrid_alpha,
+        "use_edge": use_edge,
         "classes": [],
     }
 
@@ -920,7 +1060,9 @@ def train_glyph_patchcore(
             if g is None:
                 continue
             x = preprocess_gray_to_tensor(
-                g, size=img_size, clahe_clip=clahe_clip,
+                g, size=img_size,
+                use_clahe=use_clahe, clahe_clip=clahe_clip, clahe_grid=clahe_grid,
+                use_edge=use_edge,
             ).to(device)
             with _torch.no_grad():
                 fmap = net(x)
@@ -942,12 +1084,16 @@ def train_glyph_patchcore(
         nn_model = NearestNeighbors(n_neighbors=k, metric="euclidean")
         nn_model.fit(X)
 
-        # Compute threshold from OK score distribution
+        # Compute threshold from OK score distribution using same scoring mode
         ok_scores: list[float] = []
         for emb_np in all_patches:
             d_arr, _ = nn_model.kneighbors(emb_np)
             d_mean = d_arr.mean(axis=1)
-            s = _compute_ok_score(d_mean, score_mode, topk)
+            d_t = _torch.from_numpy(d_mean)
+            s = score_from_patch_distances(
+                d_t, score_mode, topk,
+                percentile=score_percentile, hybrid_alpha=hybrid_alpha,
+            )
             ok_scores.append(s)
 
         thr = float(np.quantile(ok_scores, p_thr))
@@ -961,8 +1107,13 @@ def train_glyph_patchcore(
             "p_thr": float(p_thr),
             "thr": thr,
             "memory_bank": X,
-            "feature_layers": feature_layers,
-            "clahe_clip": float(clahe_clip),
+            "multi_scale": multi_scale,
+            "use_clahe": use_clahe,
+            "clahe_clip": clahe_clip,
+            "clahe_grid": clahe_grid,
+            "score_percentile": score_percentile,
+            "hybrid_alpha": hybrid_alpha,
+            "use_edge": use_edge,
         }
         joblib.dump(model_data, out_path / f"{cls}.joblib")
 

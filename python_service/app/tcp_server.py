@@ -161,7 +161,7 @@ class TcpProjectServer:
         """Process a single request line and write the response."""
         self._log("INFO", f"RECV from {peer}: {line_str[:500]}")
         response = await self._process_request(line_str)
-        self._log("INFO", f"SEND to {peer}: {response[:200]}")
+        self._log("INFO", f"SEND to {peer}: {response[:500]}")
         response_bytes = (response + "\n").encode("utf-8")
         writer.write(response_bytes)
         await writer.drain()
@@ -247,8 +247,33 @@ class TcpProjectServer:
             result: InferResult = await self._on_infer(
                 self.project_id, job_id, image_path, options
             )
-            self._log("INFO", f"INFER result: pred={result.pred} score={result.score:.4f} job={job_id}")
-            return result.to_json_line()
+            rs = result.residual_summary
+            rs_str = (
+                f" residual=[L_pos={rs.L_max_pos_residual:+.2f} L_neg={rs.L_max_neg_residual:+.2f}"
+                f" R_pos={rs.R_max_pos_residual:+.2f} R_neg={rs.R_max_neg_residual:+.2f}]"
+            ) if rs else ""
+            self._log("INFO", f"INFER result: pred={result.pred} score={result.score:.4f} job={job_id}{rs_str}")
+            # Build slim TCP response with only essential fields
+            slim: dict[str, Any] = {
+                "job_id": result.job_id,
+                "project_id": result.project_id,
+                "ok": result.ok,
+                "pred": result.pred,
+                "score": result.score,
+                "threshold": result.threshold,
+                "timing_ms": round(result.timing_ms.total, 2),
+                "timing_detail": {
+                    "infer": round(result.timing_ms.infer, 2),
+                    "post": round(result.timing_ms.post, 2),
+                    **result.timing_ms.detail,
+                },
+            }
+            if rs:
+                slim["L_max_pos_residual"] = rs.L_max_pos_residual
+                slim["L_max_neg_residual"] = rs.L_max_neg_residual
+                slim["R_max_pos_residual"] = rs.R_max_pos_residual
+                slim["R_max_neg_residual"] = rs.R_max_neg_residual
+            return json.dumps(slim, ensure_ascii=False)
         except Exception as e:
             self._log("ERROR", f"INFER failed: {e}")
             result = make_error_result(

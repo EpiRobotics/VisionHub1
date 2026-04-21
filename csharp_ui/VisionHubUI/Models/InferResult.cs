@@ -39,6 +39,9 @@ public class InferResult
 
     [JsonProperty("error")]
     public ErrorInfo? Error { get; set; }
+
+    [JsonProperty("residual_summary")]
+    public ResidualSummaryInfo? ResidualSummary { get; set; }
 }
 
 public class TimingInfo
@@ -96,6 +99,21 @@ public class RegionInfo
 
     [JsonProperty("area_px")]
     public int AreaPx { get; set; }
+}
+
+public class ResidualSummaryInfo
+{
+    [JsonProperty("L_max_pos_residual")]
+    public double LMaxPosResidual { get; set; }
+
+    [JsonProperty("L_max_neg_residual")]
+    public double LMaxNegResidual { get; set; }
+
+    [JsonProperty("R_max_pos_residual")]
+    public double RMaxPosResidual { get; set; }
+
+    [JsonProperty("R_max_neg_residual")]
+    public double RMaxNegResidual { get; set; }
 }
 
 public class ErrorInfo

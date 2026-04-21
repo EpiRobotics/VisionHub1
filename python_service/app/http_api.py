@@ -50,17 +50,35 @@ class LabelCropRequest(BaseModel):
 
 
 class LabelTrainRequest(BaseModel):
-    """Request to train glyph PatchCore models (Step 2 of label training)."""
+    """Request to train glyph models (Step 2 of label training)."""
     bank_dir: str
     output_model_dir: str
     project_id: str = ""
     auto_activate: bool = True
     img_size: int = 128
+    # --- Algorithm selection ---
+    algo_method: str = "synthdefect"  # "synthdefect" (recommended), "structural", or "patchcore"
+    # --- PatchCore parameters (only used when algo_method="patchcore") ---
     max_patches_per_class: int = 30000
     k: int = 1
     score_mode: str = "topk"
     topk: int = 10
     p_thr: float = 0.995
+    multi_scale: bool = False
+    use_clahe: bool = False
+    clahe_clip: float = 3.0
+    clahe_grid: int = 4
+    score_percentile: float = 99.0
+    hybrid_alpha: float = 0.5
+    use_edge: bool = False
+    # --- Structural parameters (only used when algo_method="structural") ---
+    essential_thr: float = 0.5
+    structural_score_percentile: float = 95.0
+    # --- Synthdefect (U-Net) parameters (only used when algo_method="synthdefect") ---
+    synth_epochs: int = 40
+    synth_batch_size: int = 16
+    synth_lr: float = 2e-3
+    synth_device: str = "auto"  # "auto", "cuda", or "cpu"
 
 
 class ProjectSummary(BaseModel):
@@ -488,6 +506,11 @@ def create_api(app_state: Any) -> FastAPI:
 
         job_id = f"label_train_{int(time.time())}"
 
+        logger.info(
+            "Label training request: algo_method=%s, bank_dir=%s, out=%s",
+            req.algo_method, req.bank_dir, req.output_model_dir,
+        )
+
         job_state: dict[str, Any] = {
             "job_id": job_id,
             "status": "running",
@@ -502,8 +525,6 @@ def create_api(app_state: Any) -> FastAPI:
         _label_train_jobs[job_id] = job_state
 
         def _run() -> None:
-            from app.plugins.glyph_patchcore_core import train_glyph_patchcore
-
             try:
                 def progress_cb(pct: float, msg: str) -> None:
                     job_state["progress"] = pct
@@ -511,17 +532,53 @@ def create_api(app_state: Any) -> FastAPI:
                     ts = time.strftime("%H:%M:%S")
                     job_state["log_lines"].append(f"[{ts}] [{pct:.1f}%] {msg}")
 
-                result = train_glyph_patchcore(
-                    bank_dir=req.bank_dir,
-                    out_model_dir=req.output_model_dir,
-                    img_size=req.img_size,
-                    max_patches_per_class=req.max_patches_per_class,
-                    k=req.k,
-                    score_mode=req.score_mode,
-                    topk=req.topk,
-                    p_thr=req.p_thr,
-                    progress_cb=progress_cb,
-                )
+                if req.algo_method == "synthdefect":
+                    from app.plugins.glyph_synthdefect_core import train_glyph_synthdefect
+                    result = train_glyph_synthdefect(
+                        bank_dir=req.bank_dir,
+                        out_model_dir=req.output_model_dir,
+                        img_size=req.img_size,
+                        essential_thr=req.essential_thr,
+                        epochs=req.synth_epochs,
+                        batch_size=req.synth_batch_size,
+                        lr=req.synth_lr,
+                        p_thr=req.p_thr,
+                        min_per_class=10,
+                        device=req.synth_device,
+                        progress_cb=progress_cb,
+                    )
+                elif req.algo_method == "structural":
+                    from app.plugins.glyph_structural_core import train_glyph_structural
+                    result = train_glyph_structural(
+                        bank_dir=req.bank_dir,
+                        out_model_dir=req.output_model_dir,
+                        img_size=req.img_size,
+                        essential_thr=req.essential_thr,
+                        score_percentile=req.structural_score_percentile,
+                        p_thr=req.p_thr,
+                        min_per_class=10,
+                        progress_cb=progress_cb,
+                    )
+                else:
+                    from app.plugins.glyph_patchcore_core import train_glyph_patchcore
+                    result = train_glyph_patchcore(
+                        bank_dir=req.bank_dir,
+                        out_model_dir=req.output_model_dir,
+                        img_size=req.img_size,
+                        max_patches_per_class=req.max_patches_per_class,
+                        k=req.k,
+                        score_mode=req.score_mode,
+                        topk=req.topk,
+                        p_thr=req.p_thr,
+                        multi_scale=req.multi_scale,
+                        use_clahe=req.use_clahe,
+                        clahe_clip=req.clahe_clip,
+                        clahe_grid=req.clahe_grid,
+                        score_percentile=req.score_percentile,
+                        hybrid_alpha=req.hybrid_alpha,
+                        use_edge=req.use_edge,
+                        progress_cb=progress_cb,
+                    )
 
                 job_state["status"] = "completed"
                 job_state["progress"] = 100.0
