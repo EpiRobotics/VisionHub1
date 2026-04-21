@@ -907,7 +907,7 @@ public partial class MainForm : Form
 
         var txtThrGlobal2 = new TextBox
         {
-            PlaceholderText = "e.g. 2.50",
+            PlaceholderText = "e.g. 0.8200",
             Text = savedThrText,
             Location = new Point(leftMargin + 85, y),
             Size = new Size(120, 25),
@@ -960,7 +960,7 @@ public partial class MainForm : Form
             if (ok)
             {
                 lblThrResult2.Text = thrValue.HasValue
-                    ? $"Set to {thrValue.Value:F2} (saved to config)"
+                    ? $"Set to {thrValue.Value:F4} (saved to config)"
                     : "Using per-class thresholds (saved to config)";
                 lblThrResult2.ForeColor = Color.Green;
             }
